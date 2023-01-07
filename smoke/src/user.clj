@@ -4,10 +4,17 @@
            [java.nio ByteBuffer]
            [java.net InetSocketAddress]))
 
-(defn -main [& args]
+(defn -main []
   (let [selector (Selector/open)
         serverSocketChannel (ServerSocketChannel/open)
-        address (InetSocketAddress. "localhost" 9000)]
+        address (InetSocketAddress. 9000)
+        runtime (Runtime/getRuntime)]
+    (.addShutdownHook
+     runtime
+     (Thread. (fn []
+                (.close serverSocketChannel)
+                (shutdown-agents)
+                (.halt runtime 0))))
     (.configureBlocking serverSocketChannel false)
     (.bind serverSocketChannel address)
     (.register serverSocketChannel selector SelectionKey/OP_ACCEPT nil)
