@@ -1,2 +1,2 @@
 {:deps
- {org.clojure/core.async {:mvn/version "1.6.673"}}}
+ {}}
