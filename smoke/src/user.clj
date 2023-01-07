@@ -1,34 +1,57 @@
 (ns user
+  (:gen-class)
   (:import [java.nio.channels SelectionKey Selector ServerSocketChannel]
            [java.nio ByteBuffer]
            [java.net InetSocketAddress]))
 
-(defn -main []
+(defn -main [& args]
   (let [selector (Selector/open)
         serverSocketChannel (ServerSocketChannel/open)
         address (InetSocketAddress. "localhost" 9000)]
     (.configureBlocking serverSocketChannel false)
     (.bind serverSocketChannel address)
     (.register serverSocketChannel selector SelectionKey/OP_ACCEPT nil)
-    (loop []
+    (loop [clients {}]
       (.select selector)
-      (let [keys (.selectedKeys selector)]
-        (doseq [key keys]
-          (cond
-            (.isAcceptable key)
-            (let [client (.accept serverSocketChannel)]
-              (.configureBlocking client false)
-              (.register client selector SelectionKey/OP_READ))
-            (.isReadable key)
-            (let [client (.channel key)
-                  buffer (ByteBuffer/allocate 64)
-                  read (.read client buffer)]
-              (when (pos? read)
-                (.flip buffer)
-                ;; TODO non-blocking write
-                (let [written (.write client buffer)]
-                  (when (not= written read)
-                    (throw (ex-data {:written written :read read}))))
-                ))))
-        (.clear keys))
-      (recur))))
+      (let [keys (.selectedKeys selector)
+            [key] (seq keys)]
+        (.remove keys key)
+        (cond
+
+          (.isAcceptable key)
+          (let [client (.accept serverSocketChannel)]
+            (.configureBlocking client false)
+            (.register client selector SelectionKey/OP_READ)
+            (recur (assoc clients client {::reading true ::writes []})))
+
+          (.isReadable key)
+          (let [client (.channel key)
+                buffer (ByteBuffer/allocate 64)
+                read (.read client buffer)]
+            (case read
+              -1
+              (do
+                (.register client selector SelectionKey/OP_WRITE)
+                (recur (assoc-in clients [client ::reading] false)))
+              0
+              (recur clients)
+              (do
+                (when-not (seq (get-in clients [client ::writes]))
+                  (.register client selector (+ SelectionKey/OP_READ SelectionKey/OP_WRITE)))
+                (recur (update-in clients [client ::writes] conj [read (.flip buffer)])))))
+
+          (.isWritable key)
+          (let [client (.channel key)
+                {::keys [reading writes]} (get clients client)]
+            (if (seq writes)
+              (let [[[read buffer] & writes] writes
+                    wrote (.write client buffer)]
+                (when-not (= read wrote)
+                  ;; TODO presumably we should reenqueue the partial write
+                  (prn "mismatch" read wrote))
+                (recur (assoc-in clients [client ::writes] writes)))
+              (do
+                (if reading
+                  (.register client selector SelectionKey/OP_READ)
+                  (.close client))
+                (recur clients)))))))))
