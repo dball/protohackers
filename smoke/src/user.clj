@@ -8,7 +8,8 @@
   (let [selector (Selector/open)
         serverSocketChannel (ServerSocketChannel/open)
         address (InetSocketAddress. 9000)
-        runtime (Runtime/getRuntime)]
+        runtime (Runtime/getRuntime)
+        prn (fn [& args])]
     (.addShutdownHook
      runtime
      (Thread. (fn []
@@ -36,7 +37,7 @@
 
           (.isReadable key)
           (let [client (.channel key)
-                buffer (ByteBuffer/allocate 8)
+                buffer (ByteBuffer/allocate 1024)
                 read (.read client buffer)]
             (prn "read" read (hash client))
             (case read
@@ -59,7 +60,7 @@
           (.isWritable key)
           (let [client (.channel key)
                 {::keys [reading writes]} (get clients client)]
-            (prn "write" (hash client))
+            (prn "write" (hash client) (map first writes))
             (if (seq writes)
               (let [[[read buffer] & writes] writes
                     wrote (.write client buffer)]
@@ -67,13 +68,13 @@
                 (when-not (= read wrote)
                   ;; TODO presumably we should reenqueue the partial write
                   (prn "mismatch" (hash client) read wrote))
-                (recur (assoc-in clients [client ::writes] writes)))
-              (do
-                (if reading
-                  (do
-                    (prn "register read" (hash client))
-                    (.register client selector SelectionKey/OP_READ))
-                  (do
-                    (prn "close" (hash client))
-                    (.close client)))
-                (recur clients)))))))))
+                (recur (assoc-in clients [client ::writes] (into [] writes))))
+              (if reading
+                (do
+                  (prn "register read-only" (hash client))
+                  (.register client selector SelectionKey/OP_READ)
+                  (recur clients))
+                (do
+                  (prn "close" (hash client))
+                  (.close client)
+                  (recur (dissoc clients client)))))))))))
