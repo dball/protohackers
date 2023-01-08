@@ -19,60 +19,61 @@
     (.bind serverSocketChannel address)
     (.register serverSocketChannel selector SelectionKey/OP_ACCEPT nil)
     (loop [clients {}]
+      (prn "selecting")
       (.select selector)
       (let [keys (.selectedKeys selector)
             [key] (seq keys)]
-        (prn "select" (count keys) key)
+        (prn "select" (count keys) (hash key))
         (.remove keys key)
         (cond
 
           (.isAcceptable key)
           (let [client (.accept serverSocketChannel)]
-            (prn "accept" client)
+            (prn "accept" (hash client))
             (.configureBlocking client false)
             (.register client selector SelectionKey/OP_READ)
             (recur (assoc clients client {::reading true ::writes []})))
 
           (.isReadable key)
           (let [client (.channel key)
-                buffer (ByteBuffer/allocate 64)
+                buffer (ByteBuffer/allocate 8)
                 read (.read client buffer)]
-            (prn "read" read client)
+            (prn "read" read (hash client))
             (case read
               -1
               (do
-                (prn "eof" client)
+                (prn "eof" (hash client))
                 (.register client selector SelectionKey/OP_WRITE)
                 (recur (assoc-in clients [client ::reading] false)))
               0
               (do
-                (prn "empty" client)
+                (prn "empty" (hash client))
                 (recur clients))
               (do
                 (when-not (seq (get-in clients [client ::writes]))
-                  (prn "register read-write" client)
+                  (prn "register read-write" (hash client))
                   (.register client selector (+ SelectionKey/OP_READ SelectionKey/OP_WRITE)))
-                (prn "queue buffer" client buffer (count (get-in clients [client ::writes])))
+                (prn "queue buffer" (hash client) buffer (count (get-in clients [client ::writes])))
                 (recur (update-in clients [client ::writes] conj [read (.flip buffer)])))))
 
           (.isWritable key)
           (let [client (.channel key)
                 {::keys [reading writes]} (get clients client)]
-            (prn "write" client)
+            (prn "write" (hash client))
             (if (seq writes)
               (let [[[read buffer] & writes] writes
                     wrote (.write client buffer)]
-                (prn "wrote" client buffer read wrote)
+                (prn "wrote" (hash client) buffer read wrote)
                 (when-not (= read wrote)
                   ;; TODO presumably we should reenqueue the partial write
-                  (prn "mismatch" client read wrote))
+                  (prn "mismatch" (hash client) read wrote))
                 (recur (assoc-in clients [client ::writes] writes)))
               (do
                 (if reading
                   (do
-                    (prn "register read" client)
+                    (prn "register read" (hash client))
                     (.register client selector SelectionKey/OP_READ))
                   (do
-                    (prn "close" client)
+                    (prn "close" (hash client))
                     (.close client)))
                 (recur clients)))))))))
