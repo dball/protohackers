@@ -1,0 +1,7 @@
+# flyctl launch added from .gitignore
+**/.calva
+**/.clj-kondo
+**/.cpcache
+**/.lsp
+**/.nrepl-port
+fly.toml
