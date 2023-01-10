@@ -10,7 +10,7 @@ fn main() -> io::Result<()> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(1024);
 
-    let addr = "127.0.0.1:9000".parse::<SocketAddr>().unwrap();
+    let addr = "0.0.0.0:9000".parse::<SocketAddr>().unwrap();
     let mut server = TcpListener::bind(addr)?;
 
     poll.registry().register(&mut server, SERVER, Interest::READABLE)?;
@@ -59,6 +59,7 @@ fn main() -> io::Result<()> {
                                     match connection.write(&data[0..*read]) {
                                         Ok(n) if n == *read => {
                                             poll.registry().reregister(connection, token, Interest::READABLE)?;
+                                            *read = 0;
                                         },
                                         Ok(_n) => {
                                             panic!("partial write. does zero mean closed? and how do we write a partial vec?");
@@ -70,6 +71,8 @@ fn main() -> io::Result<()> {
                                 }
                                 if *closed {
                                     poll.registry().deregister(connection)?;
+                                    connection.flush()?;
+                                    //connection.shutdown(std::net::Shutdown::Both)?;
                                     connections.remove(&token);
                                 }
                             }
