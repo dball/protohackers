@@ -17,7 +17,7 @@ impl Ledger {
       return false;
     }
     self.entries.insert(inst, price);
-    return true;
+    true
   }
 
   pub fn mean(&self, min: Inst, max:Inst) -> Option<Price> {
@@ -31,9 +31,15 @@ impl Ledger {
       sum += *price as f64;
     }
     if n == 0 {
-      return None
+      None
     } else {
-      return Some((sum / n as f64).round() as Price)
+      Some((sum / n as f64).round() as Price)
     }
+  }
+}
+
+impl Default for Ledger {
+  fn default() -> Self {
+    Self::new()
   }
 }
