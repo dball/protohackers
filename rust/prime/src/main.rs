@@ -4,7 +4,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:9000").await.unwrap();
+    let listener = TcpListener::bind("0.0.0.0:9000").await.unwrap();
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         tokio::spawn(async move {
