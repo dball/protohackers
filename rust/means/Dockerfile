@@ -4,12 +4,12 @@ RUN rustup target add x86_64-unknown-linux-musl
 RUN apt update && apt install -y musl-tools musl-dev
 RUN update-ca-certificates
 
-ENV USER=app
+ENV USER=means
 ENV UID=10001
 
 RUN adduser --disabled-password --gecos "" --home="/app" --shell "/sbin/nologin" --no-create-home --uid "${UID}" "${USER}"
 
-WORKDIR /app
+WORKDIR /means
 
 COPY ./ .
 
@@ -20,10 +20,10 @@ FROM scratch
 COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /etc/group /etc/group
 
-WORKDIR /app
+WORKDIR /means
 
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/app ./
+COPY --from=builder /means/target/x86_64-unknown-linux-musl/release/means ./
 
-USER app:app
+USER means:means
 
-CMD ["/app/app"]
+CMD ["/means/means"]
