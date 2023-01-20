@@ -38,6 +38,7 @@ impl Room {
             Err(_) => { None },
         }
     }
+
 }
 
 async fn broadcast_logger(mut receiver: broadcast::Receiver<Message>) {
