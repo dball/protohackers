@@ -1,3 +1,5 @@
+pub mod person;
+pub mod room;
 pub mod room;
 
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
