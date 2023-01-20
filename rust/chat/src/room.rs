@@ -1,159 +1,114 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::collections::BTreeMap;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::oneshot;
-use tokio::sync::broadcast;
 
 enum Command {
     Enter { res: oneshot::Sender<Pair> },
+    Join { person: Person, res: oneshot::Sender<()> },
 }
 
 #[derive(Debug)]
 pub struct Room {
-    sender: Sender<Command>,
+    cmd_sender: Sender<Command>,
 }
 
 pub struct Pair {
-    sender: Sender<Message>,
-    receiver: Receiver<Message>,
+    pub sender: Sender<Message>,
+    pub receiver: Receiver<Message>,
 }
 
 impl Room {
     pub fn new() -> Self {
-        let (cmd_sender, mut cmd_receiver) = channel::<Command>(1);
-        let (broadcast_sender, mut broadcast_receiver) = broadcast::channel::<Message>(16);
-        tokio::spawn(async move {
-            loop {
-                match broadcast_receiver.recv().await {
-                    Ok(msg) => {
-                        eprintln!("room.broadcast {:?}", msg);
-                        continue;
-                    },
-                    Err(e) => {
-                        break;
-                    }
-                }
-            }
-        });
-        let manager = tokio::spawn(async move {
-            loop {
-                match cmd_receiver.recv().await {
-                    Some(cmd) => match cmd {
-                        Command::Enter { res } => {
-                            let (their_tx, our_rx) = channel::<Message>(1);
-                            let (our_tx, their_rx) = channel::<Message>(1);
-                            let mut ours = Pair { sender: our_tx, receiver: their_rx };
-                            let theirs = Pair { sender: their_tx, receiver: our_rx };
-                            if res.send(theirs).is_ok() {
-                                tokio::spawn(async move {
-                                    if let Some(person) = match ours.receiver.recv().await {
-                                        Some(msg) => {
-                                            Person::new(msg.contents)
-                                        },
-                                        None => {
-                                            None
-                                        },
-                                    } {
-                                        if ours.sender.send(Message::new("joined".to_owned())).await.is_ok() {
-
-                                        }
-                                    }
-
-                                });
-                            }
-                        }
-                    },
-                    None => {
-                        break;
-                    }
-                }
-            }
-        });
-        Self { sender: cmd_sender }
+        let (cmd_sender, cmd_receiver) = channel::<Command>(1);
+        let (broadcast_sender, broadcast_receiver) = broadcast::channel::<Message>(16);
+        tokio::spawn(async move { broadcast_logger(broadcast_receiver).await });
+        tokio::spawn(async move { room_manager(cmd_receiver, broadcast_sender).await });
+        Self { cmd_sender }
     }
 
-    /*
-    pub async fn enter(&mut self) -> Option<Conversation> {
-        let (sender, receiver) = oneshot::channel();
-        let cmd = Command::Enter { res: sender };
-        if self.sender.send(cmd).await.is_ok() {
-            match receiver.await {
-                Ok(conv) => Some(conv),
-                Err(_) => None,
-            }
-        } else {
-            None
+    pub async fn enter(&self) -> Option<Pair> {
+        let (res_sender, res_receiver) = oneshot::channel::<Pair>();
+        if self.cmd_sender.send(Command::Enter{ res: res_sender }).await.is_err() {
+            return None
         }
-    }
-    */
-
-    /*
-    pub fn enter(&mut self) -> Conversation {
-        let conv = Conversation::new(1);
-        let registration = tokio::spawn(async {
-            if let Err(_) = conv.outgoing.sender.send(Message::new("name >".to_owned())).await {
-              // couldn't write the name prompt, we're done
-              return None;
-            }
-            let name = conv.incoming.receiver.recv().await;
-            match name {
-              Some(message) => {
-                if let Some(person) = Person::new(message.contents) {
-                  // we have a good person
-                  let s: String = "* The room contains: ".to_owned();
-                  s += &self.occupants.keys().into_iter().map(|person| person.name).collect::<Vec<_>>().join(", ");
-                  conv.outgoing.sender.send(Message::new(s)).await;
-                  self.occupants.insert(person, conv);
-                } else {
-                  // they gave us an invalid name, we're done
-                  conv.outgoing.sender.send(Message::new("invalid name".to_owned())).await;
-                  return None;
-                }
-              },
-              None => {
-                // didn't even get a name, we're done
-                return None;
-              },
-            }
-            Some(())
-        });
-        conv
-    }
-    */
-}
-
-#[derive(Debug)]
-pub struct Conversation {
-    incoming: Connection,
-    outgoing: Connection,
-}
-
-impl Conversation {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            incoming: Connection::new(capacity),
-            outgoing: Connection::new(capacity),
+        match res_receiver.await {
+            Ok(pair) => { Some(pair) },
+            Err(_) => { None },
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Connection {
-    sender: Sender<Message>,
-    receiver: Receiver<Message>,
+async fn broadcast_logger(mut receiver: broadcast::Receiver<Message>) {
+    loop {
+        match receiver.recv().await {
+            Ok(msg) => {
+                eprintln!("room.broadcast {:?}", msg);
+                continue;
+            }
+            Err(_) => {
+                break;
+            }
+        }
+    }
 }
 
-impl Connection {
-    pub fn new(capacity: usize) -> Self {
-        let (sender, receiver) = channel(capacity);
-        Self { sender, receiver }
+async fn room_manager(mut cmd_receiver: Receiver<Command>, broadcast_sender: broadcast::Sender<Message>) {
+    loop {
+        match cmd_receiver.recv().await {
+            Some(cmd) => match cmd {
+                Command::Enter { res } => {
+                    let (their_tx, our_rx) = channel::<Message>(1);
+                    let (our_tx, their_rx) = channel::<Message>(1);
+                    let ours = Pair {
+                        sender: our_tx,
+                        receiver: their_rx,
+                    };
+                    let theirs = Pair {
+                        sender: their_tx,
+                        receiver: our_rx,
+                    };
+                    if res.send(theirs).is_ok() {
+                        let their_sender = broadcast_sender.clone();
+                        tokio::spawn(async move { person_manager(ours, their_sender) });
+                    }
+                },
+                Command::Join { person, res } => {
+
+                },
+            },
+            None => {
+                break;
+            }
+        }
+    }
+}
+
+async fn person_manager(mut ours: Pair, broadcast_sender: broadcast::Sender<Message>) {
+    let msg = match ours.receiver.recv().await {
+        Some(msg) => { msg }
+        None => { return; }
+    };
+    let person = match Person::new(msg.contents) {
+        Some(person) => { person },
+        None => { return; }
+    };
+    let greeting = Message::new("joined".to_owned());
+    let receipt = ours.sender.send(greeting).await;
+    if receipt.is_err() {
+        return;
+    }
+    loop {
+        // select across:
+        // 1. ours receiver -> send broadcast (or send message command to the room, not sure) or exit
+        // 2. broadcast receiver -> send ours transmitter or exit
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    contents: String,
+    pub contents: String,
 }
 
 impl Message {
