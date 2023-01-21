@@ -12,15 +12,14 @@ pub enum Command {
         res: oneshot::Sender<(Message, Endpoint)>,
     },
     Say {
-        person_id: Id,
+        person: Person,
         message: Message,
     },
     Leave {
-        person_id: Id,
+        person: Person,
     },
 }
 
-pub type Id = u64;
 pub type Message = String;
 
 #[derive(Debug)]
@@ -43,14 +42,12 @@ impl Room {
     }
 
     async fn receive_commands(cmd_tx: mpsc::Sender<Command>, mut cmd_rx: mpsc::Receiver<Command>) {
-        let mut next_id: Id = 1;
-        let mut ids: BTreeMap<Person, Id> = BTreeMap::new();
-        let mut endpoints: BTreeMap<Id, (Person, mpsc::Sender<Message>)> = BTreeMap::new();
+        let mut people: BTreeMap<Person, mpsc::Sender<Message>> = BTreeMap::new();
         loop {
             match cmd_rx.recv().await {
                 Some(Command::Join { person, res }) => {
                     let msg = format!("* {} has entered the room\n", person.name);
-                    endpoints.values().for_each(|(_, msg_tx)| {
+                    people.values().for_each(|msg_tx| {
                         let tx_clone = msg_tx.clone();
                         let msg_clone = msg.clone();
                         tokio::spawn(async move {
@@ -61,22 +58,19 @@ impl Room {
                     let (tx2, rx2) = mpsc::channel(1);
                     let ours = Endpoint { tx: tx1, rx: rx2 };
                     let theirs = Endpoint { tx: tx2, rx: rx1 };
-                    let names = ids
+                    let names = people
                         .keys()
                         .map(|person| person.name.clone())
                         .collect::<Vec<String>>()
                         .join(", ");
                     let msg = format!("* The room contains: {}\n", names);
                     if res.send((msg, theirs)).is_ok() {
-                        let id = next_id;
-                        next_id += 1;
-                        ids.insert(person.clone(), id);
-                        endpoints.insert(id, (person.clone(), ours.tx));
-                        tokio::spawn(Self::receive_messages(id, ours.rx, cmd_tx.clone()));
+                        people.insert(person.clone(), ours.tx);
+                        tokio::spawn(Self::receive_messages(person, ours.rx, cmd_tx.clone()));
                     }
                 }
-                Some(Command::Say { person_id, message }) => {}
-                Some(Command::Leave { person_id }) => {}
+                Some(Command::Say { person, message }) => {}
+                Some(Command::Leave { person }) => {}
                 None => {
                     break;
                 }
@@ -85,7 +79,7 @@ impl Room {
     }
 
     async fn receive_messages(
-        id: Id,
+        person: Person,
         msg_rx: mpsc::Receiver<Message>,
         cmd_tx: mpsc::Sender<Command>,
     ) {
