@@ -70,7 +70,19 @@ impl Room {
                     }
                 }
                 Some(Command::Say { person, message }) => {}
-                Some(Command::Leave { person }) => {}
+                Some(Command::Leave { person }) => {
+                    if people.remove(&person).is_some() {
+                        let msg = format!("* {} has left the room\n", person.name);
+                        // copied from 50
+                        people.values().for_each(|msg_tx| {
+                            let tx_clone = msg_tx.clone();
+                            let msg_clone = msg.clone();
+                            tokio::spawn(async move {
+                                tx_clone.send(msg_clone).await;
+                            });
+                        });
+                    }
+                }
                 None => {
                     break;
                 }
