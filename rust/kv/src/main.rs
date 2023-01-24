@@ -3,6 +3,11 @@ use std::io;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 
+enum Command {
+    Get { key: Vec<u8>, addr: SocketAddr },
+    Set { key: Vec<u8>, value: Vec<u8> },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
     let mut data: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
@@ -13,7 +18,7 @@ async fn main() -> Result<(), io::Error> {
         match read_command(&socket).await {
             Ok(Some(Command::Get { key, addr })) => {
                 if let Some(value) = data.get(&key) {
-                    socket.send_to(&value[..], addr).await;
+                    if socket.send_to(&value[..], addr).await.is_err() {}
                 }
             }
             Ok(Some(Command::Set { key, value })) if key != version_key => {
@@ -22,11 +27,6 @@ async fn main() -> Result<(), io::Error> {
             _ => (),
         }
     }
-}
-
-enum Command {
-    Get { key: Vec<u8>, addr: SocketAddr },
-    Set { key: Vec<u8>, value: Vec<u8> },
 }
 
 async fn read_command(socket: &UdpSocket) -> Result<Option<Command>, io::Error> {
