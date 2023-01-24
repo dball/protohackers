@@ -18,7 +18,11 @@ async fn main() -> Result<(), io::Error> {
         match read_command(&socket).await {
             Ok(Some(Command::Get { key, addr })) => {
                 if let Some(value) = data.get(&key) {
-                    if socket.send_to(&value[..], addr).await.is_err() {}
+                    let mut res = Vec::with_capacity(key.len() + value.len() + 1);
+                    res.extend_from_slice(&key[..]);
+                    res.extend_from_slice(&b"=".to_vec());
+                    res.extend_from_slice(&value[..]);
+                    if socket.send_to(&res[..], addr).await.is_err() {}
                 }
             }
             Ok(Some(Command::Set { key, value })) if key != version_key => {
