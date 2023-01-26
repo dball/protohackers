@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::domain::Message;
+use crate::domain::{Camera, Message};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -31,26 +31,18 @@ impl<'a> Connection<'a> {
                 self.writer.write_u8(msg.len().try_into().unwrap()).await?;
                 self.writer.write_all(msg.as_bytes()).await?;
             }
-            Message::Ticket {
-                plate,
-                road,
-                mile1,
-                timestamp1,
-                mile2,
-                timestamp2,
-                speed,
-            } => {
+            Message::Ticket(ticket) => {
                 self.writer.write_u8(0x21).await?;
                 self.writer
-                    .write_u8(plate.len().try_into().unwrap())
+                    .write_u8(ticket.plate.len().try_into().unwrap())
                     .await?;
-                self.writer.write_all(plate.as_bytes()).await?;
-                self.writer.write_u16(*road).await?;
-                self.writer.write_u16(*mile1).await?;
-                self.writer.write_u32(*timestamp1).await?;
-                self.writer.write_u16(*mile2).await?;
-                self.writer.write_u32(*timestamp2).await?;
-                self.writer.write_u16(*speed).await?;
+                self.writer.write_all(ticket.plate.as_bytes()).await?;
+                self.writer.write_u16(ticket.road).await?;
+                self.writer.write_u16(ticket.mile1).await?;
+                self.writer.write_u32(ticket.timestamp1).await?;
+                self.writer.write_u16(ticket.mile2).await?;
+                self.writer.write_u32(ticket.timestamp2).await?;
+                self.writer.write_u16(ticket.speed).await?;
             }
             Message::Heartbeat => {
                 self.writer.write_u8(0x41).await?;
@@ -74,7 +66,7 @@ impl<'a> Connection<'a> {
                 match String::from_utf8(buf) {
                     Ok(plate) => {
                         let timestamp = self.reader.read_u32().await?;
-                        Ok(Message::Plate { plate, timestamp })
+                        Ok(Message::Plate(plate, timestamp))
                     }
                     Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
                 }
@@ -87,7 +79,7 @@ impl<'a> Connection<'a> {
                 let road = self.reader.read_u16().await?;
                 let mile = self.reader.read_u16().await?;
                 let limit = self.reader.read_u16().await?;
-                Ok(Message::IAmCamera { road, mile, limit })
+                Ok(Message::IAmCamera(Camera { road, mile, limit }))
             }
             0x81 => {
                 let numroads = self.reader.read_u8().await?;
