@@ -3,7 +3,7 @@ use std::io;
 use crate::message::Message;
 
 use tokio::{
-    io::{AsyncWriteExt, BufReader, BufWriter},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     net::{
         tcp::{ReadHalf, WriteHalf},
         TcpStream,
@@ -60,5 +60,44 @@ impl<'a> Connection<'a> {
             }
         }
         Ok(())
+    }
+
+    async fn read_message(&mut self) -> io::Result<Message> {
+        match self.reader.read_u8().await? {
+            0x20 => {
+                let len: usize = self.reader.read_u8().await?.into();
+                let mut buf: Vec<u8> = Vec::with_capacity(len);
+                let n = self.reader.read(&mut buf[..]).await?;
+                if n != len {
+                    return Err(io::Error::from(io::ErrorKind::InvalidData));
+                }
+                match String::from_utf8(buf) {
+                    Ok(plate) => {
+                        let timestamp = self.reader.read_u32().await?;
+                        Ok(Message::Plate { plate, timestamp })
+                    }
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+                }
+            }
+            0x40 => {
+                let interval = self.reader.read_u32().await?;
+                Ok(Message::WantHeartbeat { interval })
+            }
+            0x80 => {
+                let road = self.reader.read_u16().await?;
+                let mile = self.reader.read_u16().await?;
+                let limit = self.reader.read_u16().await?;
+                Ok(Message::IAmCamera { road, mile, limit })
+            }
+            0x81 => {
+                let numroads = self.reader.read_u8().await?;
+                let mut roads: Vec<u16> = Vec::with_capacity(numroads.into());
+                for _ in 0..numroads {
+                    roads.push(self.reader.read_u16().await?);
+                }
+                Ok(Message::IAmDispatcher { numroads, roads })
+            }
+            _ => Err(io::Error::from(io::ErrorKind::Unsupported)),
+        }
     }
 }
