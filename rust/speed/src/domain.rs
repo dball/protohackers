@@ -89,7 +89,7 @@ impl TimeRanges {
                 return true;
             }
         }
-        if let Some((their_lower, _)) = self.asc.range(upper..).last() {
+        if let Some((their_lower, _)) = self.asc.range(upper..).next() {
             if *their_lower <= upper {
                 return true;
             }
