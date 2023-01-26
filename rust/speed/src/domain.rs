@@ -84,6 +84,11 @@ impl TimeRanges {
     // Returns true if the given range bounds inclusively intersect with any
     // of the ranges in the set.
     fn intersects_any(&self, lower: Timestamp, upper: Timestamp) -> bool {
+        // TODO this is all bogus, ennit? we want to go down from our lower bound to the
+        // nearest lower bound and see if their upper bound is above our lower bound.
+        // and then up from our upper bound to the nearest upper bound and see if their
+        // lower bound is below our upper bound.
+        todo!("fix this ");
         if let Some((their_upper, _)) = self.desc.range(0..lower).last() {
             if *their_upper >= lower {
                 return true;
