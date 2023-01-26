@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::message::Message;
+use crate::domain::Message;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
