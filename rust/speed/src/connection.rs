@@ -23,7 +23,7 @@ impl<'a> Connection<'a> {
         Connection { reader, writer }
     }
 
-    async fn write_message(&mut self, message: &Message) -> io::Result<()> {
+    pub async fn write_message(&mut self, message: &Message) -> io::Result<()> {
         match message {
             Message::Error { msg } => {
                 self.writer.write_u8(0x10).await?;
@@ -54,7 +54,7 @@ impl<'a> Connection<'a> {
         Ok(())
     }
 
-    async fn read_message(&mut self) -> io::Result<Message> {
+    pub async fn read_message(&mut self) -> io::Result<Message> {
         match self.reader.read_u8().await? {
             0x20 => {
                 let len: usize = self.reader.read_u8().await?.into();

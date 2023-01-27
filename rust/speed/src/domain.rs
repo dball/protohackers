@@ -49,6 +49,7 @@ pub type Deciseconds = u32;
 
 pub type Plate = String;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub road: Road,
     pub mile: Mile,
@@ -56,7 +57,7 @@ pub struct Camera {
 }
 
 pub struct Dispatcher {
-    roads: BTreeSet<Road>,
+    pub roads: BTreeSet<Road>,
 }
 
 pub struct Ticket {
@@ -79,7 +80,7 @@ pub struct Region {
 }
 
 impl Region {
-    pub fn new(&self) -> Self {
+    pub fn new() -> Self {
         Self {
             tickets_to_issue: BTreeMap::new(),
             tickets_issued_days: BTreeMap::new(),
