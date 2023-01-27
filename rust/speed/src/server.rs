@@ -1,10 +1,16 @@
 use std::{collections::BTreeSet, io};
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{
+        mpsc::{self, Sender},
+        oneshot,
+    },
+};
 
 use crate::{
     connection::Connection,
-    domain::{Camera, Dispatcher, Message, Region},
+    domain::{Camera, Dispatcher, Message, Plate, Region, Ticket, Timestamp},
 };
 
 pub struct Server {
@@ -19,27 +25,51 @@ impl Server {
     }
 
     pub async fn run(&mut self) -> Result<(), io::Error> {
-        todo!("spawn a task to listen to plate commands and ticket polls and apply them to the region");
+        let (tx, mut rx) = mpsc::channel::<ServerCommand>(16);
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
         loop {
-            let (mut socket, _) = listener.accept().await?;
-            tokio::spawn(async move {
-                handle(socket);
-            });
+            tokio::select! {
+                _ = async {
+                    loop {
+                        let (socket, _) = listener.accept().await?;
+                        let tx = tx.clone();
+                        tokio::spawn(async move { handle(socket, tx); });
+                    }
+                    // "Help the rust type inference out" ?
+                    Ok::<_, io::Error>(())
+                } => {},
+                Some(cmd) = rx.recv() => {
+                    match cmd {
+                        ServerCommand::RecordPlate(camera, plate, timestamp) => {
+                            self.region.record_plate(camera, plate, timestamp);
+                        }
+                        ServerCommand::IssueTicket(dispatcher, tx) => {
+                            if tx.send(self.region.issue_ticket(dispatcher)).is_err() {
+                                eprintln!("ticket dropped");
+                            }
+                        }
+                    }
+                }
+            };
         }
     }
 }
 
-enum Kind {
+enum ServerCommand {
+    RecordPlate(Camera, Plate, Timestamp),
+    IssueTicket(Dispatcher, oneshot::Sender<Option<Ticket>>),
+}
+
+enum ConnKind {
     Unknown,
     Camera(Camera),
     Dispatcher(Dispatcher),
 }
 
-async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
+async fn handle(mut socket: TcpStream, tx: Sender<ServerCommand>) -> Result<(), io::Error> {
     let mut heartbeat_interval = None;
     let mut conn = Connection::new(&mut socket);
-    let mut kind = Kind::Unknown;
+    let mut kind = ConnKind::Unknown;
     loop {
         todo!("select across read_message, heartbeat clock, and a ticket dispatch clock");
         // TODO when the clocks are empty, can we use None in the select! form or do we
@@ -58,9 +88,9 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
             continue;
         }
         match kind {
-            Kind::Unknown => match msg {
+            ConnKind::Unknown => match msg {
                 Message::IAmCamera(camera) => {
-                    kind = Kind::Camera(camera);
+                    kind = ConnKind::Camera(camera);
                 }
                 Message::IAmDispatcher { numroads, roads } => {
                     // TODO should this be a from/into relation between the msg and the struct?
@@ -69,7 +99,7 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
                         droads.insert(*road);
                     });
                     let dispatcher = Dispatcher { roads: droads };
-                    kind = Kind::Dispatcher(dispatcher);
+                    kind = ConnKind::Dispatcher(dispatcher);
                     todo!("register the dispatcher locally");
                 }
                 _ => {
@@ -80,7 +110,7 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
                     return Ok(());
                 }
             },
-            Kind::Camera(camera) => match msg {
+            ConnKind::Camera(camera) => match msg {
                 Message::Plate(plate, timestamp) => {
                     todo!("send plate to the region");
                 }
@@ -92,7 +122,7 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
                     return Ok(());
                 }
             },
-            Kind::Dispatcher(dispatcher) => {
+            ConnKind::Dispatcher(dispatcher) => {
                 conn.write_message(&Message::Error {
                     msg: "invalid dispatcher message".to_string(),
                 })
