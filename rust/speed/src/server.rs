@@ -1,12 +1,6 @@
-use std::{
-    collections::{BTreeSet, HashMap},
-    io,
-};
+use std::{collections::BTreeSet, io};
 
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::mpsc,
-};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     connection::Connection,
@@ -25,6 +19,7 @@ impl Server {
     }
 
     pub async fn run(&mut self) -> Result<(), io::Error> {
+        todo!("spawn a task to listen to plate commands and ticket polls and apply them to the region");
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
         loop {
             let (mut socket, _) = listener.accept().await?;
@@ -46,6 +41,9 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
     let mut conn = Connection::new(&mut socket);
     let mut kind = Kind::Unknown;
     loop {
+        todo!("select across read_message, heartbeat clock, and a ticket dispatch clock");
+        // TODO when the clocks are empty, can we use None in the select! form or do we
+        // need to use futures::future::OptionFuture ?
         let msg = conn.read_message().await?;
         if let Message::WantHeartbeat { interval } = msg {
             if heartbeat_interval.is_some() {
@@ -56,7 +54,7 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
                 return Ok(());
             }
             heartbeat_interval = Some(interval);
-            todo!("build a clock stream and select across it and read_message in the loop");
+            todo!("build a clock stream");
             continue;
         }
         match kind {
@@ -72,6 +70,7 @@ async fn handle(mut socket: TcpStream) -> Result<(), io::Error> {
                     });
                     let dispatcher = Dispatcher { roads: droads };
                     kind = Kind::Dispatcher(dispatcher);
+                    todo!("register the dispatcher locally");
                 }
                 _ => {
                     conn.write_message(&Message::Error {
