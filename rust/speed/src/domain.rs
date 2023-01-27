@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 // Messages are sent between clients and the server.
 //
@@ -16,13 +16,19 @@ pub enum Message {
     Error {
         msg: String,
     },
+    // camera -> server
     Plate(Plate, Timestamp),
+    // server -> dispatcher
     Ticket(Ticket),
+    // client -> server
     WantHeartbeat {
         interval: Deciseconds,
     },
+    // server -> client
     Heartbeat,
+    // (client->camera) -> server
     IAmCamera(Camera),
+    // (client->dispatcher) -> server
     IAmDispatcher {
         // Note this is redundant with roads.len(), just a serialization artifact.
         // Do we keep it in the struct or compute it at serialization?
@@ -63,87 +69,111 @@ pub struct Ticket {
     pub speed: Speed,
 }
 
-struct TimeRanges {
-    asc: BTreeMap<Timestamp, Timestamp>,
-    desc: BTreeMap<Timestamp, Timestamp>,
-}
-
-impl TimeRanges {
-    fn new(&self) -> Self {
-        Self {
-            asc: BTreeMap::new(),
-            desc: BTreeMap::new(),
-        }
-    }
-
-    fn insert(&mut self, lower: Timestamp, upper: Timestamp) {
-        self.asc.insert(lower, upper);
-        self.desc.insert(upper, lower);
-    }
-
-    // Returns true if the given range bounds inclusively intersect with any
-    // of the ranges in the set.
-    fn intersects_any(&self, lower: Timestamp, upper: Timestamp) -> bool {
-        // TODO this is all bogus, ennit? we want to go down from our lower bound to the
-        // nearest lower bound and see if their upper bound is above our lower bound.
-        // and then up from our upper bound to the nearest upper bound and see if their
-        // lower bound is below our upper bound.
-        todo!("fix this ");
-        if let Some((their_upper, _)) = self.desc.range(0..lower).last() {
-            if *their_upper >= lower {
-                return true;
-            }
-        }
-        if let Some((their_lower, _)) = self.asc.range(upper..).next() {
-            if *their_lower <= upper {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-// we need to be able to:
-// 1. record a plate for a camera at a time
-// 2. check the records of the nearest cameras in both directions in space for their closest
-// observations in both directions in time and to see if a violation has occurred, resolving the
-// time, and the mile of the camera if so
 pub struct Region {
-    // The set of violations that resulted in tickets.
-    tickets: BTreeSet<Ticket>,
-    // The set of tickets that are waiting to be issued.
-    to_issue: BTreeSet<Ticket>,
-    // The set of times for which a plate may not be issued another ticket.
-    unticketable_ranges: BTreeMap<Plate, TimeRanges>,
-    // The set of plate records.
-    records: BTreeMap<Plate, BTreeMap<Road, BTreeMap<Mile, BTreeSet<Timestamp>>>>,
+    // The set of tickets that have yet be issued.
+    tickets_to_issue: BTreeMap<Road, VecDeque<Ticket>>,
+    // The set of days for which a plate has already been issued a ticket.
+    tickets_issued_days: BTreeMap<Plate, BTreeSet<Timestamp>>,
+    // The set of plate records, indexed by plate, road, timestamp, then mile.
+    records: BTreeMap<Plate, BTreeMap<Road, BTreeMap<Timestamp, Mile>>>,
 }
 
 impl Region {
     pub fn new(&self) -> Self {
         Self {
-            tickets: BTreeSet::new(),
-            to_issue: BTreeSet::new(),
-            unticketable_ranges: BTreeMap::new(),
+            tickets_to_issue: BTreeMap::new(),
+            tickets_issued_days: BTreeMap::new(),
             records: BTreeMap::new(),
         }
     }
 
-    // records an observation of a plate by a camera
-    pub fn record_plate(camera: Camera, plate: Plate) {
-        todo!()
+    // records an observation of a plate by a camera. This will also record a ticket to issue if
+    // the observation indicates a speed violation and the plate has not already been issued a ticket
+    // for any of the ticket days.
+    pub fn record_plate(&mut self, camera: Camera, plate: Plate, timestamp: Timestamp) {
+        if let Some(ticket) = self.do_record_plate(camera, plate.clone(), timestamp) {
+            let day1 = ticket.timestamp1 / 86400;
+            let day2 = ticket.timestamp2 / 86400;
+            let tickets_issued_days = self.tickets_issued_days.entry(plate).or_default();
+            for day in day1..day2 + 1 {
+                if tickets_issued_days.contains(&day) {
+                    return;
+                }
+            }
+            let tickets_for_road = self.tickets_to_issue.entry(ticket.road).or_default();
+            tickets_for_road.push_back(ticket);
+            for day in day1..day2 + 1 {
+                if tickets_issued_days.insert(day) {
+                    return;
+                }
+            }
+        }
     }
 
-    // returns a ticket to dispatch, if there is any. Tickets are issued only once.
-    pub fn issue_ticket() -> Option<(Ticket, Dispatcher)> {
-        todo!()
+    // returns a ticket to dispatch, if there are any for the given dispatcher. Tickets are issued only once.
+    pub fn issue_ticket(&mut self, dispatcher: Dispatcher) -> Option<Ticket> {
+        for road in dispatcher.roads.iter() {
+            if let Some(tickets) = self.tickets_to_issue.get_mut(&road) {
+                if let Some(ticket) = tickets.pop_front() {
+                    return Some(ticket);
+                }
+            }
+        }
+        None
     }
 
-    fn do_record_plate(camera: Camera, plate: Plate) -> Option<Ticket> {
-        todo!()
+    // records a plate observation and returns a ticket if it indicated a speed violation.
+    fn do_record_plate(
+        &mut self,
+        camera: Camera,
+        plate: Plate,
+        timestamp: Timestamp,
+    ) -> Option<Ticket> {
+        let by_road = self.records.entry(plate.clone()).or_default();
+        let by_timestamp = by_road.entry(camera.road).or_default();
+        if by_timestamp.insert(timestamp, camera.mile).is_none() {
+            if let Some((then, there)) = by_timestamp.range(0..timestamp).last() {
+                if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
+                {
+                    return Some(ticket);
+                }
+            } else if let Some((then, there)) = by_timestamp.range(timestamp + 1..).next() {
+                if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
+                {
+                    return Some(ticket);
+                }
+            }
+        }
+        None
     }
 
-    fn do_record_ticket(ticket: Ticket) {
-        todo!()
+    // returns a ticket if the observations indicate a speed violation.
+    fn compute_ticket(
+        camera: Camera,
+        plate: Plate,
+        now: Timestamp,
+        then: Timestamp,
+        there: Mile,
+    ) -> Option<Ticket> {
+        let distance = camera.mile - there;
+        let elapsed = now - then;
+        let fspeed: f64 = f64::from(distance) / f64::from(elapsed);
+        if fspeed.abs() > camera.limit.into() {
+            let (mile1, mile2, timestamp1, timestamp2) = if fspeed > 0.0 {
+                (camera.mile, there, now, then)
+            } else {
+                (there, camera.mile, then, now)
+            };
+            return Some(Ticket {
+                plate,
+                road: camera.road,
+                mile1,
+                timestamp1,
+                mile2,
+                timestamp2,
+                speed: (fspeed.abs() * 100.0).round() as u16,
+            });
+        }
+        None
     }
 }
