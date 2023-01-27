@@ -2,10 +2,7 @@ use std::{collections::BTreeSet, io};
 
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{
-        mpsc::{self, Sender},
-        oneshot,
-    },
+    sync::{mpsc, oneshot},
 };
 
 use crate::{
@@ -35,7 +32,7 @@ impl Server {
                         let tx = tx.clone();
                         tokio::spawn(async move { handle(socket, tx); });
                     }
-                    // "Help the rust type inference out" ?
+                    // "Help the rust type inferencer out" ?
                     Ok::<_, io::Error>(())
                 } => {},
                 Some(cmd) = rx.recv() => {
@@ -66,22 +63,26 @@ enum ConnKind {
     Dispatcher(Dispatcher),
 }
 
-async fn handle(mut socket: TcpStream, tx: Sender<ServerCommand>) -> Result<(), io::Error> {
+async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error> {
+    let msg = Message::Error {
+        msg: msg.to_string(),
+    };
+    conn.write_message(&msg).await?;
+    Ok(())
+}
+
+async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Result<(), io::Error> {
     let mut heartbeat_interval = None;
     let mut conn = Connection::new(&mut socket);
     let mut kind = ConnKind::Unknown;
     loop {
-        todo!("select across read_message, heartbeat clock, and a ticket dispatch clock");
+        //todo!("select across read_message, heartbeat clock, and a ticket dispatch clock");
         // TODO when the clocks are empty, can we use None in the select! form or do we
         // need to use futures::future::OptionFuture ?
         let msg = conn.read_message().await?;
         if let Message::WantHeartbeat { interval } = msg {
             if heartbeat_interval.is_some() {
-                conn.write_message(&Message::Error {
-                    msg: "already beating".to_string(),
-                })
-                .await?;
-                return Ok(());
+                return send_error(conn, "already beating").await;
             }
             heartbeat_interval = Some(interval);
             todo!("build a clock stream");
@@ -103,31 +104,22 @@ async fn handle(mut socket: TcpStream, tx: Sender<ServerCommand>) -> Result<(), 
                     todo!("register the dispatcher locally");
                 }
                 _ => {
-                    conn.write_message(&Message::Error {
-                        msg: "unidentified".to_string(),
-                    })
-                    .await?;
-                    return Ok(());
+                    return send_error(conn, "unidentified").await;
                 }
             },
             ConnKind::Camera(camera) => match msg {
                 Message::Plate(plate, timestamp) => {
-                    todo!("send plate to the region");
+                    let cmd = ServerCommand::RecordPlate(camera, plate, timestamp);
+                    if tx.send(cmd).await.is_err() {
+                        eprintln!("dropped plate record");
+                    }
                 }
                 _ => {
-                    conn.write_message(&Message::Error {
-                        msg: "invalid camera message".to_string(),
-                    })
-                    .await?;
-                    return Ok(());
+                    return send_error(conn, "invalid camera message").await;
                 }
             },
-            ConnKind::Dispatcher(dispatcher) => {
-                conn.write_message(&Message::Error {
-                    msg: "invalid dispatcher message".to_string(),
-                })
-                .await?;
-                return Ok(());
+            ConnKind::Dispatcher(_) => {
+                return send_error(conn, "invalid dispatcher message").await;
             }
         }
     }
