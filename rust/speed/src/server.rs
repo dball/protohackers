@@ -72,6 +72,9 @@ async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error
     Ok(())
 }
 
+// TODO is this goofy or good? Feels like it'll call on every select poll
+// even in the none case, but really, if it's none, we don't even want to
+// participate in the select.
 async fn maybe_tick(interval: &mut Option<Interval>) -> Option<()> {
     match interval {
         Some(interval) => {
