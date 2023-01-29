@@ -65,10 +65,7 @@ enum ConnKind {
 }
 
 async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error> {
-    let msg = Message::Error {
-        msg: msg.to_string(),
-    };
-    conn.write_message(&msg).await?;
+    conn.write_message(&Message::Error(msg.to_string())).await?;
     Ok(())
 }
 
@@ -94,7 +91,7 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
             msg = conn.read_message() => {
                 // TODO do we send_error on error?
                 let msg = msg?;
-                if let Message::WantHeartbeat { interval } = msg {
+                if let Message::WantHeartbeat(interval) = msg {
                     if heartbeat.is_some() {
                         return send_error(conn, "already beating").await;
                     }
@@ -107,15 +104,8 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
                         Message::IAmCamera(camera) => {
                             kind = ConnKind::Camera(camera);
                         }
-                        Message::IAmDispatcher { numroads: _, roads } => {
-                            // TODO should this be a from/into relation between the msg and the struct?
-                            let mut droads = BTreeSet::new();
-                            roads.iter().for_each(|road| {
-                                droads.insert(*road);
-                            });
-                            let dispatcher = Dispatcher { roads: droads };
+                        Message::IAmDispatcher(dispatcher) => {
                             kind = ConnKind::Dispatcher(dispatcher);
-                            todo!("register the dispatcher locally");
                         }
                         _ => {
                             return send_error(conn, "unidentified").await;

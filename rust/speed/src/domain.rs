@@ -13,28 +13,19 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 // TODO how can we construct de/serialization code for these declaratively?
 pub enum Message {
     // server -> client
-    Error {
-        msg: String,
-    },
+    Error(String),
     // camera -> server
     Plate(Plate, Timestamp),
     // server -> dispatcher
     Ticket(Ticket),
     // client -> server
-    WantHeartbeat {
-        interval: Deciseconds,
-    },
+    WantHeartbeat(Deciseconds),
     // server -> client
     Heartbeat,
     // (client->camera) -> server
     IAmCamera(Camera),
     // (client->dispatcher) -> server
-    IAmDispatcher {
-        // Note this is redundant with roads.len(), just a serialization artifact.
-        // Do we keep it in the struct or compute it at serialization?
-        numroads: u8,
-        roads: Vec<Road>,
-    },
+    IAmDispatcher(Dispatcher),
 }
 
 pub type Timestamp = u32;

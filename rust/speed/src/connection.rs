@@ -1,6 +1,6 @@
-use std::io;
+use std::{collections::BTreeSet, io};
 
-use crate::domain::{Camera, Message};
+use crate::domain::{Camera, Dispatcher, Message, Road};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -25,7 +25,7 @@ impl<'a> Connection<'a> {
 
     pub async fn write_message(&mut self, message: &Message) -> io::Result<()> {
         match message {
-            Message::Error { msg } => {
+            Message::Error(msg) => {
                 self.writer.write_u8(0x10).await?;
                 // write_string
                 self.writer.write_u8(msg.len().try_into().unwrap()).await?;
@@ -73,7 +73,7 @@ impl<'a> Connection<'a> {
             }
             0x40 => {
                 let interval = self.reader.read_u32().await?;
-                Ok(Message::WantHeartbeat { interval })
+                Ok(Message::WantHeartbeat(interval))
             }
             0x80 => {
                 let road = self.reader.read_u16().await?;
@@ -83,11 +83,11 @@ impl<'a> Connection<'a> {
             }
             0x81 => {
                 let numroads = self.reader.read_u8().await?;
-                let mut roads: Vec<u16> = Vec::with_capacity(numroads.into());
+                let mut roads: BTreeSet<Road> = BTreeSet::new();
                 for _ in 0..numroads {
-                    roads.push(self.reader.read_u16().await?);
+                    roads.insert(self.reader.read_u16().await?);
                 }
-                Ok(Message::IAmDispatcher { numroads, roads })
+                Ok(Message::IAmDispatcher(Dispatcher { roads }))
             }
             _ => Err(io::Error::from(io::ErrorKind::Unsupported)),
         }
