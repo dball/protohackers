@@ -84,11 +84,11 @@ impl<'a> Connection<'a> {
             }
             0x81 => {
                 let numroads = self.reader.read_u8().await?;
-                let mut roads: BTreeSet<Road> = BTreeSet::new();
+                let mut dispatcher: Dispatcher = Default::default();
                 for _ in 0..numroads {
-                    roads.insert(self.reader.read_u16().await?);
+                    dispatcher.roads.insert(self.reader.read_u16().await?);
                 }
-                Ok(Message::IAmDispatcher(Dispatcher { roads }))
+                Ok(Message::IAmDispatcher(dispatcher))
             }
             _ => Err(io::Error::from(io::ErrorKind::Unsupported)),
         }

@@ -41,17 +41,19 @@ pub type Speed = u16;
 
 pub type Plate = String;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
     pub road: Road,
     pub mile: Mile,
     pub limit: Speed,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct Dispatcher {
     pub roads: BTreeSet<Road>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Ticket {
     pub plate: Plate,
     pub road: Road,
@@ -88,14 +90,14 @@ impl Region {
             let day1 = ticket.timestamp1 / 86400;
             let day2 = ticket.timestamp2 / 86400;
             let tickets_issued_days = self.tickets_issued_days.entry(plate).or_default();
-            for day in day1..day2 + 1 {
+            for day in day1..=day2 {
                 if tickets_issued_days.contains(&day) {
                     return;
                 }
             }
             let tickets_for_road = self.tickets_to_issue.entry(ticket.road).or_default();
             tickets_for_road.push_back(ticket);
-            for day in day1..day2 + 1 {
+            for day in day1..=day2 {
                 if tickets_issued_days.insert(day) {
                     return;
                 }
