@@ -1,6 +1,6 @@
-use std::{collections::BTreeSet, io, time::Duration};
+use std::{io, time::Duration};
 
-use crate::domain::{Camera, Dispatcher, Message, Road};
+use crate::domain::{Camera, Dispatcher, Message};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
