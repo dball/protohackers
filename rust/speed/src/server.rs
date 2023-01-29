@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, time::Duration};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -58,12 +58,6 @@ enum ServerCommand {
     IssueTicket(Dispatcher, oneshot::Sender<Option<Ticket>>),
 }
 
-enum ConnKind {
-    Unknown,
-    Camera(Camera),
-    Dispatcher(Dispatcher),
-}
-
 async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error> {
     conn.write_message(&Message::Error(msg.to_string())).await?;
     Ok(())
@@ -85,44 +79,108 @@ async fn maybe_tick(interval: &mut Option<Interval>) -> Option<()> {
 async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Result<(), io::Error> {
     let mut heartbeat = None;
     let mut conn = Connection::new(&mut socket);
-    let mut kind = ConnKind::Unknown;
     loop {
         tokio::select! {
             msg = conn.read_message() => {
-                // TODO do we send_error on error?
-                let msg = msg?;
-                if let Message::WantHeartbeat(duration) = msg {
-                    if heartbeat.is_some() {
-                        return send_error(conn, "already beating").await;
+                match msg {
+                    Ok(Message::WantHeartbeat(duration)) => {
+                        if heartbeat.is_some() {
+                            return send_error(conn, "already beating").await;
+                        }
+                        heartbeat = Some(time::interval(duration));
                     }
-                    heartbeat = Some(time::interval(duration));
-                    continue;
+                    Ok(Message::IAmCamera(camera)) => {
+                        return handle_camera(conn, tx, camera, heartbeat).await;
+                    }
+                    Ok(Message::IAmDispatcher(dispatcher)) => {
+                        return handle_dispatcher(conn, tx, dispatcher, heartbeat).await;
+                    }
+                    _ => {
+                        return send_error(conn, "invalid message").await;
+                    }
                 }
-                match kind {
-                    ConnKind::Unknown => match msg {
-                        Message::IAmCamera(camera) => {
-                            kind = ConnKind::Camera(camera);
+            }
+            Some(_) = maybe_tick(&mut heartbeat) => {
+                conn.write_message(&Message::Heartbeat).await?;
+            }
+        }
+    }
+}
+
+async fn handle_camera(
+    mut conn: Connection<'_>,
+    tx: mpsc::Sender<ServerCommand>,
+    camera: Camera,
+    mut heartbeat: Option<Interval>,
+) -> Result<(), io::Error> {
+    loop {
+        tokio::select! {
+            msg = conn.read_message() => {
+                match msg {
+                    Ok(Message::WantHeartbeat(duration)) => {
+                        if heartbeat.is_some() {
+                            return send_error(conn, "already beating").await;
                         }
-                        Message::IAmDispatcher(dispatcher) => {
-                            kind = ConnKind::Dispatcher(dispatcher);
+                        heartbeat = Some(time::interval(duration));
+                    }
+                    Ok(Message::Plate(plate, timestamp)) => {
+                        let cmd = ServerCommand::RecordPlate(camera, plate, timestamp);
+                        if tx.send(cmd).await.is_err() {
+                            eprintln!("dropped plate record");
                         }
-                        _ => {
-                            return send_error(conn, "unidentified").await;
+                    }
+                    _ => {
+                        return send_error(conn, "invalid camera message").await;
+                    }
+                }
+            }
+            Some(_) = maybe_tick(&mut heartbeat) => {
+                conn.write_message(&Message::Heartbeat).await?;
+            }
+        }
+    }
+}
+
+async fn maybe_recv<T>(rx: &mut Option<oneshot::Receiver<Option<T>>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.await.unwrap(),
+        None => None,
+    }
+}
+
+async fn handle_dispatcher(
+    mut conn: Connection<'_>,
+    cmd_tx: mpsc::Sender<ServerCommand>,
+    dispatcher: Dispatcher,
+    mut heartbeat: Option<Interval>,
+) -> Result<(), io::Error> {
+    let mut issue = time::interval(Duration::from_millis(100));
+    let mut ticketer: Option<oneshot::Receiver<Option<Ticket>>> = None;
+    loop {
+        tokio::select! {
+            _ = issue.tick() => {
+                let (tx, rx) = oneshot::channel();
+                let cmd = ServerCommand::IssueTicket(dispatcher.clone(), tx);
+                if cmd_tx.send(cmd).await.is_err() {
+                    eprintln!("dropped dispatch request");
+                } else {
+                    ticketer = Some(rx);
+                }
+            }
+            Some(ticket) = maybe_recv(&mut ticketer) => {
+                conn.write_message(&Message::Ticket(ticket)).await?;
+                ticketer = None;
+            }
+            msg = conn.read_message() => {
+                match msg {
+                    Ok(Message::WantHeartbeat(duration)) => {
+                        if heartbeat.is_some() {
+                            return send_error(conn, "already beating").await;
                         }
-                    },
-                    ConnKind::Camera(camera) => match msg {
-                        Message::Plate(plate, timestamp) => {
-                            let cmd = ServerCommand::RecordPlate(camera, plate, timestamp);
-                            if tx.send(cmd).await.is_err() {
-                                eprintln!("dropped plate record");
-                            }
-                        }
-                        _ => {
-                            return send_error(conn, "invalid camera message").await;
-                        }
-                    },
-                    ConnKind::Dispatcher(_) => {
-                        return send_error(conn, "invalid dispatcher message").await;
+                        heartbeat = Some(time::interval(duration));
+                    }
+                    _ => {
+                        return send_error(conn, "invalid camera message").await;
                     }
                 }
             }
