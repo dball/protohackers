@@ -91,11 +91,10 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
             msg = conn.read_message() => {
                 // TODO do we send_error on error?
                 let msg = msg?;
-                if let Message::WantHeartbeat(interval) = msg {
+                if let Message::WantHeartbeat(duration) = msg {
                     if heartbeat.is_some() {
                         return send_error(conn, "already beating").await;
                     }
-                    let duration = Duration::from_micros((interval * 10).into());
                     heartbeat = Some(time::interval(duration));
                     continue;
                 }

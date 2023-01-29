@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Duration,
+};
 
 // Messages are sent between clients and the server.
 //
@@ -19,7 +22,7 @@ pub enum Message {
     // server -> dispatcher
     Ticket(Ticket),
     // client -> server
-    WantHeartbeat(Deciseconds),
+    WantHeartbeat(Duration),
     // server -> client
     Heartbeat,
     // (client->camera) -> server
@@ -35,8 +38,6 @@ pub type Road = u16;
 pub type Mile = u16;
 
 pub type Speed = u16;
-
-pub type Deciseconds = u32;
 
 pub type Plate = String;
 

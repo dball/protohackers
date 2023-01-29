@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, io};
+use std::{collections::BTreeSet, io, time::Duration};
 
 use crate::domain::{Camera, Dispatcher, Message, Road};
 
@@ -72,8 +72,9 @@ impl<'a> Connection<'a> {
                 }
             }
             0x40 => {
-                let interval = self.reader.read_u32().await?;
-                Ok(Message::WantHeartbeat(interval))
+                let deciseconds = self.reader.read_u32().await?;
+                let duration = Duration::from_micros((deciseconds * 10).into());
+                Ok(Message::WantHeartbeat(duration))
             }
             0x80 => {
                 let road = self.reader.read_u16().await?;
