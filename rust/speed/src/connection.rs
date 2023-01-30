@@ -51,6 +51,7 @@ impl<'a> Connection<'a> {
                 unimplemented!("This is only the server.")
             }
         }
+        self.writer.flush().await?;
         Ok(())
     }
 
@@ -59,21 +60,23 @@ impl<'a> Connection<'a> {
             0x20 => {
                 let len: usize = self.reader.read_u8().await?.into();
                 let mut buf: Vec<u8> = Vec::with_capacity(len);
-                let n = self.reader.read(&mut buf[..]).await?;
-                if n != len {
-                    return Err(io::Error::from(io::ErrorKind::InvalidData));
-                }
+                buf.resize(len, 0);
+                self.reader.read_exact(&mut buf[..]).await?;
                 match String::from_utf8(buf) {
                     Ok(plate) => {
                         let timestamp = self.reader.read_u32().await?;
                         Ok(Message::Plate(plate, timestamp))
                     }
-                    Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+                    Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
                 }
             }
             0x40 => {
                 let deciseconds = self.reader.read_u32().await?;
-                let duration = Duration::from_micros((deciseconds * 10).into());
+                let duration = if deciseconds == 0 {
+                    None
+                } else {
+                    Some(Duration::from_millis((deciseconds * 100).into()))
+                };
                 Ok(Message::WantHeartbeat(duration))
             }
             0x80 => {

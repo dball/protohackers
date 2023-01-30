@@ -1,4 +1,7 @@
-use std::{io, time::Duration};
+use std::{
+    io::{self, ErrorKind},
+    time::Duration,
+};
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -27,15 +30,10 @@ impl Server {
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
         loop {
             tokio::select! {
-                _ = async {
-                    loop {
-                        let (socket, _) = listener.accept().await?;
-                        let tx = tx.clone();
-                        tokio::spawn(async move { handle(socket, tx); });
-                    }
-                    // "Help the rust type inferencer out" ?
-                    Ok::<_, io::Error>(())
-                } => {},
+                Ok((socket, _)) = listener.accept() => {
+                    let tx = tx.clone();
+                    tokio::spawn(async move { handle(socket, tx).await; });
+                }
                 Some(cmd) = rx.recv() => {
                     match cmd {
                         ServerCommand::RecordPlate(camera, plate, timestamp) => {
@@ -66,18 +64,18 @@ async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error
 // TODO is this goofy or good? Feels like it'll call on every select poll
 // even in the none case, but really, if it's none, we don't even want to
 // participate in the select.
-async fn maybe_tick(interval: &mut Option<Interval>) -> Option<()> {
+async fn maybe_tick(interval: &mut Option<Option<Interval>>) -> Option<()> {
     match interval {
-        Some(interval) => {
+        Some(Some(interval)) => {
             interval.tick().await;
             Some(())
         }
-        None => None,
+        _ => None,
     }
 }
 
 async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Result<(), io::Error> {
-    let mut heartbeat = None;
+    let mut heartbeat: Option<Option<Interval>> = None;
     let mut conn = Connection::new(&mut socket);
     loop {
         tokio::select! {
@@ -87,7 +85,11 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
                         if heartbeat.is_some() {
                             return send_error(conn, "already beating").await;
                         }
-                        heartbeat = Some(time::interval(duration));
+                        if let Some(duration) = duration {
+                            heartbeat = Some(Some(time::interval(duration)));
+                        } else {
+                            heartbeat = Some(None);
+                        }
                     }
                     Ok(Message::IAmCamera(camera)) => {
                         return handle_camera(conn, tx, camera, heartbeat).await;
@@ -95,6 +97,7 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
                     Ok(Message::IAmDispatcher(dispatcher)) => {
                         return handle_dispatcher(conn, tx, dispatcher, heartbeat).await;
                     }
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
                     _ => {
                         return send_error(conn, "invalid message").await;
                     }
@@ -111,7 +114,7 @@ async fn handle_camera(
     mut conn: Connection<'_>,
     tx: mpsc::Sender<ServerCommand>,
     camera: Camera,
-    mut heartbeat: Option<Interval>,
+    mut heartbeat: Option<Option<Interval>>,
 ) -> Result<(), io::Error> {
     loop {
         tokio::select! {
@@ -121,7 +124,11 @@ async fn handle_camera(
                         if heartbeat.is_some() {
                             return send_error(conn, "already beating").await;
                         }
-                        heartbeat = Some(time::interval(duration));
+                        if let Some(duration) = duration {
+                            heartbeat = Some(Some(time::interval(duration)));
+                        } else {
+                            heartbeat = Some(None);
+                        }
                     }
                     Ok(Message::Plate(plate, timestamp)) => {
                         let cmd = ServerCommand::RecordPlate(camera, plate, timestamp);
@@ -129,7 +136,9 @@ async fn handle_camera(
                             eprintln!("dropped plate record");
                         }
                     }
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
                     _ => {
+                        eprintln!("invalid camera message {:?}", msg);
                         return send_error(conn, "invalid camera message").await;
                     }
                 }
@@ -152,9 +161,9 @@ async fn handle_dispatcher(
     mut conn: Connection<'_>,
     cmd_tx: mpsc::Sender<ServerCommand>,
     dispatcher: Dispatcher,
-    mut heartbeat: Option<Interval>,
+    mut heartbeat: Option<Option<Interval>>,
 ) -> Result<(), io::Error> {
-    let mut issue = time::interval(Duration::from_millis(100));
+    let mut issue = time::interval(Duration::from_millis(1000));
     let mut ticketer: Option<oneshot::Receiver<Option<Ticket>>> = None;
     loop {
         tokio::select! {
@@ -177,10 +186,15 @@ async fn handle_dispatcher(
                         if heartbeat.is_some() {
                             return send_error(conn, "already beating").await;
                         }
-                        heartbeat = Some(time::interval(duration));
+                        if let Some(duration) = duration {
+                            heartbeat = Some(Some(time::interval(duration)));
+                        } else {
+                            heartbeat = Some(None);
+                        }
                     }
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
                     _ => {
-                        return send_error(conn, "invalid camera message").await;
+                        return send_error(conn, "invalid dispatcher message").await;
                     }
                 }
             }

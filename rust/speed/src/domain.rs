@@ -14,6 +14,7 @@ use std::{
 // TODO if we did, would that affect the dispatch speed in reads, writes, etc.?
 // TODO how can we encode the direction, and/or the state sequence constraints on the message types
 // TODO how can we construct de/serialization code for these declaratively?
+#[derive(Debug)]
 pub enum Message {
     // server -> client
     Error(String),
@@ -22,7 +23,7 @@ pub enum Message {
     // server -> dispatcher
     Ticket(Ticket),
     // client -> server
-    WantHeartbeat(Duration),
+    WantHeartbeat(Option<Duration>),
     // server -> client
     Heartbeat,
     // (client->camera) -> server
@@ -128,11 +129,13 @@ impl Region {
         let by_timestamp = by_road.entry(camera.road).or_default();
         if by_timestamp.insert(timestamp, camera.mile).is_none() {
             if let Some((then, there)) = by_timestamp.range(0..timestamp).last() {
+                eprintln!("looking back {} {}", then, there);
                 if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
                 {
                     return Some(ticket);
                 }
             } else if let Some((then, there)) = by_timestamp.range(timestamp + 1..).next() {
+                eprintln!("looking fore {} {}", then, there);
                 if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
                 {
                     return Some(ticket);
@@ -150,14 +153,22 @@ impl Region {
         then: Timestamp,
         there: Mile,
     ) -> Option<Ticket> {
-        let distance = camera.mile - there;
-        let elapsed = now - then;
-        let fspeed: f64 = f64::from(distance) / f64::from(elapsed);
-        if fspeed.abs() > camera.limit.into() {
-            let (mile1, mile2, timestamp1, timestamp2) = if fspeed > 0.0 {
-                (camera.mile, there, now, then)
-            } else {
+        eprintln!("COMPUTE_TICKET plate={}", plate);
+        let miles = f64::from(camera.mile) - f64::from(there);
+        eprintln!("MILES from={} to={} delta={}", camera.mile, there, miles);
+        let hours = (f64::from(now) - f64::from(then)) / 3600.0;
+        eprintln!("TIME from={} to={} hours={}", now, then, hours);
+        let velocity: f64 = miles / hours;
+        let speed = velocity.abs();
+        eprintln!(
+            "SPEEDS vel={} speed={} limit={}",
+            velocity, speed, camera.limit,
+        );
+        if speed > camera.limit.into() {
+            let (mile1, mile2, timestamp1, timestamp2) = if then < now {
                 (there, camera.mile, then, now)
+            } else {
+                (camera.mile, there, now, then)
             };
             return Some(Ticket {
                 plate,
@@ -166,7 +177,7 @@ impl Region {
                 timestamp1,
                 mile2,
                 timestamp2,
-                speed: (fspeed.abs() * 100.0).round() as u16,
+                speed: (speed * 100.0).round() as u16,
             });
         }
         None
