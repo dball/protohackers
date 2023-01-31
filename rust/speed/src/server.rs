@@ -18,6 +18,8 @@ pub struct Server {
     region: Region,
 }
 
+// TODO missing 0QNP from tickets issued... and 553 other cars heh
+
 impl Server {
     pub fn new() -> Self {
         Self {
@@ -163,7 +165,7 @@ async fn handle_dispatcher(
     dispatcher: Dispatcher,
     mut heartbeat: Option<Option<Interval>>,
 ) -> Result<(), io::Error> {
-    let mut issue = time::interval(Duration::from_millis(1000));
+    let mut issue = time::interval(Duration::from_millis(10));
     let mut ticketer: Option<oneshot::Receiver<Option<Ticket>>> = None;
     loop {
         tokio::select! {

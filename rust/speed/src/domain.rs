@@ -54,7 +54,7 @@ pub struct Dispatcher {
     pub roads: BTreeSet<Road>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ticket {
     pub plate: Plate,
     pub road: Road,
@@ -90,18 +90,24 @@ impl Region {
         if let Some(ticket) = self.do_record_plate(camera, plate.clone(), timestamp) {
             let day1 = ticket.timestamp1 / 86400;
             let day2 = ticket.timestamp2 / 86400;
-            let tickets_issued_days = self.tickets_issued_days.entry(plate).or_default();
+            let tickets_issued_days = self.tickets_issued_days.entry(plate.clone()).or_default();
             for day in day1..=day2 {
                 if tickets_issued_days.contains(&day) {
+                    eprintln!(
+                        "RECORD_PLATE plate={} days=[{}-{}] already issued {}",
+                        plate, day1, day2, day
+                    );
                     return;
                 }
             }
+            eprintln!(
+                "RECORD_PLATE plate={} days=[{}-{}] issuing",
+                plate, day1, day2
+            );
             let tickets_for_road = self.tickets_to_issue.entry(ticket.road).or_default();
             tickets_for_road.push_back(ticket);
             for day in day1..=day2 {
-                if tickets_issued_days.insert(day) {
-                    return;
-                }
+                tickets_issued_days.insert(day);
             }
         }
     }
@@ -129,13 +135,11 @@ impl Region {
         let by_timestamp = by_road.entry(camera.road).or_default();
         if by_timestamp.insert(timestamp, camera.mile).is_none() {
             if let Some((then, there)) = by_timestamp.range(0..timestamp).last() {
-                eprintln!("looking back {} {}", then, there);
                 if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
                 {
                     return Some(ticket);
                 }
             } else if let Some((then, there)) = by_timestamp.range(timestamp + 1..).next() {
-                eprintln!("looking fore {} {}", then, there);
                 if let Some(ticket) = Self::compute_ticket(camera, plate, timestamp, *then, *there)
                 {
                     return Some(ticket);
@@ -153,16 +157,14 @@ impl Region {
         then: Timestamp,
         there: Mile,
     ) -> Option<Ticket> {
-        eprintln!("COMPUTE_TICKET plate={}", plate);
-        let miles = f64::from(camera.mile) - f64::from(there);
-        eprintln!("MILES from={} to={} delta={}", camera.mile, there, miles);
+        let here = camera.mile;
+        let miles = f64::from(here) - f64::from(there);
         let hours = (f64::from(now) - f64::from(then)) / 3600.0;
-        eprintln!("TIME from={} to={} hours={}", now, then, hours);
         let velocity: f64 = miles / hours;
         let speed = velocity.abs();
         eprintln!(
-            "SPEEDS vel={} speed={} limit={}",
-            velocity, speed, camera.limit,
+            "COMPUTE_TICKET plate={} miles=[{}-{}={}] times=[{}-{}={}] velocity=[{} >= {} ?]",
+            plate, here, there, miles, now, then, hours, velocity, camera.limit
         );
         if speed > camera.limit.into() {
             let (mile1, mile2, timestamp1, timestamp2) = if then < now {
@@ -181,5 +183,39 @@ impl Region {
             });
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::Region;
+
+    use super::{Camera, Mile, Plate, Ticket, Timestamp};
+
+    #[test]
+    fn compute_ticket() {
+        let camera = Camera {
+            road: 0,
+            mile: 1,
+            limit: 10,
+        };
+        let plate: Plate = "A1".into();
+        let now: Timestamp = 100;
+        let then: Timestamp = 110;
+        let there: Mile = 2;
+        // 1 mile in 10 seconds is 6 miles a minute is 360 miles per hour
+        let ticket = Ticket {
+            plate: plate.clone(),
+            road: 0,
+            mile1: 1,
+            timestamp1: 100,
+            mile2: 2,
+            timestamp2: 110,
+            speed: 36000,
+        };
+        assert_eq!(
+            Some(ticket),
+            Region::compute_ticket(camera, plate, now, then, there)
+        );
     }
 }
