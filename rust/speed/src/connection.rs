@@ -1,6 +1,6 @@
 use std::{io, time::Duration};
 
-use crate::domain::{Camera, Dispatcher, Message};
+use crate::domain::{Camera, Dispatcher, Plate, Ticket, Timestamp};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -13,6 +13,35 @@ use tokio::{
 pub struct Connection<'a> {
     reader: BufReader<ReadHalf<'a>>,
     writer: BufWriter<WriteHalf<'a>>,
+}
+
+// Messages are sent between clients and the server.
+//
+// The server expects a client to identify its type.
+//
+// server: {IAmCamera: [Plate]*, IAmDispatcher: []} with one WantHeartbeat allowed at any point
+// camera clients expect only heartbeats, dispatchers also expect tickets.
+//
+// TODO how can we statically encode the code on the cases?
+// TODO if we did, would that affect the dispatch speed in reads, writes, etc.?
+// TODO how can we encode the direction, and/or the state sequence constraints on the message types
+// TODO how can we construct de/serialization code for these declaratively?
+#[derive(Debug)]
+pub enum Message {
+    // server -> client
+    Error(String),
+    // camera -> server
+    Plate(Plate, Timestamp),
+    // server -> dispatcher
+    Ticket(Ticket),
+    // client -> server
+    WantHeartbeat(Option<Duration>),
+    // server -> client
+    Heartbeat,
+    // (client->camera) -> server
+    IAmCamera(Camera),
+    // (client->dispatcher) -> server
+    IAmDispatcher(Dispatcher),
 }
 
 impl<'a> Connection<'a> {

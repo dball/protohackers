@@ -10,8 +10,8 @@ use tokio::{
 };
 
 use crate::{
-    connection::Connection,
-    domain::{Camera, Dispatcher, Message, Plate, Region, Ticket, Timestamp},
+    connection::{Connection, Message},
+    domain::{Camera, Dispatcher, Plate, Region, Ticket, Timestamp},
 };
 
 pub struct Server {
