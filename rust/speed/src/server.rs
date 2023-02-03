@@ -1,7 +1,4 @@
-use std::{
-    io::{self, ErrorKind},
-    time::Duration,
-};
+use std::io;
 
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -41,10 +38,8 @@ impl Server {
                         ServerCommand::RecordPlate(camera, plate, timestamp) => {
                             self.region.record_plate(camera, plate, timestamp);
                         }
-                        ServerCommand::IssueTicket(dispatcher, tx) => {
-                            if tx.send(self.region.issue_ticket(dispatcher)).is_err() {
-                                eprintln!("ticket dropped");
-                            }
+                        ServerCommand::RegisterDispatcher(dispatcher, tx) => {
+                            tx.send(self.region.register_dispatcher(dispatcher));
                         }
                     }
                 }
@@ -55,7 +50,7 @@ impl Server {
 
 enum ServerCommand {
     RecordPlate(Camera, Plate, Timestamp),
-    IssueTicket(Dispatcher, oneshot::Sender<Option<Ticket>>),
+    RegisterDispatcher(Dispatcher, oneshot::Sender<mpsc::Receiver<Ticket>>),
 }
 
 async fn send_error(mut conn: Connection<'_>, msg: &str) -> Result<(), io::Error> {
@@ -99,7 +94,7 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
                     Ok(Message::IAmDispatcher(dispatcher)) => {
                         return handle_dispatcher(conn, tx, dispatcher, heartbeat).await;
                     }
-                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
                     _ => {
                         return send_error(conn, "invalid message").await;
                     }
@@ -138,7 +133,7 @@ async fn handle_camera(
                             eprintln!("dropped plate record");
                         }
                     }
-                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
                     _ => {
                         eprintln!("invalid camera message {:?}", msg);
                         return send_error(conn, "invalid camera message").await;
@@ -152,35 +147,33 @@ async fn handle_camera(
     }
 }
 
-async fn maybe_recv<T>(rx: &mut Option<oneshot::Receiver<Option<T>>>) -> Option<T> {
-    match rx {
-        Some(rx) => rx.await.unwrap(),
-        None => None,
-    }
-}
-
 async fn handle_dispatcher(
     mut conn: Connection<'_>,
     cmd_tx: mpsc::Sender<ServerCommand>,
     dispatcher: Dispatcher,
     mut heartbeat: Option<Option<Interval>>,
 ) -> Result<(), io::Error> {
-    let mut issue = time::interval(Duration::from_millis(10));
-    let mut ticketer: Option<oneshot::Receiver<Option<Ticket>>> = None;
+    let (tx, rx) = oneshot::channel();
+    let cmd = ServerCommand::RegisterDispatcher(dispatcher, tx);
+    if cmd_tx.send(cmd).await.is_err() {
+        eprintln!("failed to register dispatcher");
+        return Ok(());
+    }
+    let ticket_rx = rx.await;
+    if ticket_rx.is_err() {
+        eprintln!("failed to receive dispatcher ticket channel");
+        return Ok(());
+    }
+    let mut ticket_rx = ticket_rx.unwrap();
     loop {
         tokio::select! {
-            _ = issue.tick() => {
-                let (tx, rx) = oneshot::channel();
-                let cmd = ServerCommand::IssueTicket(dispatcher.clone(), tx);
-                if cmd_tx.send(cmd).await.is_err() {
-                    eprintln!("dropped dispatch request");
-                } else {
-                    ticketer = Some(rx);
+            ticket = ticket_rx.recv() => {
+                if ticket.is_none() {
+                    eprintln!("ticket channel closed");
+                    return Ok(());
                 }
-            }
-            Some(ticket) = maybe_recv(&mut ticketer) => {
-                conn.write_message(&Message::Ticket(ticket)).await?;
-                ticketer = None;
+                let ticket = ticket.unwrap();
+                conn.write_message(&Message::Ticket(ticket)).await?
             }
             msg = conn.read_message() => {
                 match msg {
@@ -194,7 +187,7 @@ async fn handle_dispatcher(
                             heartbeat = Some(None);
                         }
                     }
-                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => {},
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
                     _ => {
                         return send_error(conn, "invalid dispatcher message").await;
                     }

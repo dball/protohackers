@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tokio::sync::mpsc;
 
@@ -38,21 +38,32 @@ pub struct Observation {
     pub time: Timestamp,
 }
 
+#[derive(Clone, Debug)]
+struct Dispatch {
+    dispatcher: Dispatcher,
+    tickets_tx: mpsc::Sender<Ticket>,
+}
+
 pub struct Region {
     observations_tx: mpsc::UnboundedSender<Observation>,
-    tickets_rx: mpsc::UnboundedReceiver<Ticket>,
+    dispatches_tx: mpsc::UnboundedSender<Dispatch>,
 }
 
 impl Region {
     pub fn new() -> Self {
         let (observations_tx, observations_rx) = mpsc::unbounded_channel();
         let (violations_tx, violations_rx) = mpsc::channel(1);
-        let (tickets_tx, tickets_rx) = mpsc::unbounded_channel();
         tokio::spawn(Self::do_record_observations(observations_rx, violations_tx));
+
+        let (tickets_tx, tickets_rx) = mpsc::unbounded_channel();
         tokio::spawn(Self::do_assess_violations(violations_rx, tickets_tx));
+
+        let (dispatches_tx, dispatches_rx) = mpsc::unbounded_channel();
+        tokio::spawn(Self::do_manage_dispatchers(dispatches_rx, tickets_rx));
+
         Self {
             observations_tx,
-            tickets_rx,
+            dispatches_tx,
         }
     }
 
@@ -63,7 +74,7 @@ impl Region {
                 plate,
                 time,
             })
-            .expect("send to unbounded plates_seen");
+            .expect("send to unbounded observations");
     }
 
     async fn do_record_observations(
@@ -90,9 +101,9 @@ impl Region {
         let by_timestamp = by_road.entry(obs.camera.road).or_default();
         if by_timestamp.insert(obs.time, obs.camera.mile).is_none() {
             if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
-                Self::compute_ticket(obs.camera, obs.plate, obs.time, *then, *there)
+                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
             } else if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
-                Self::compute_ticket(obs.camera, obs.plate, obs.time, *then, *there)
+                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
             } else {
                 None
             }
@@ -104,7 +115,7 @@ impl Region {
     // returns a ticket if the observations indicate a speed violation.
     fn compute_ticket(
         camera: Camera,
-        plate: Plate,
+        plate: &Plate,
         now: Timestamp,
         then: Timestamp,
         there: Mile,
@@ -121,7 +132,7 @@ impl Region {
                 (camera.mile, there, now, then)
             };
             return Some(Ticket {
-                plate,
+                plate: plate.clone(),
                 road: camera.road,
                 mile1,
                 timestamp1,
@@ -157,6 +168,76 @@ impl Region {
             }
         }
     }
+
+    pub fn register_dispatcher(&mut self, dispatcher: Dispatcher) -> mpsc::Receiver<Ticket> {
+        let (tickets_tx, tickets_rx) = mpsc::channel(1);
+        let dispatch = Dispatch {
+            dispatcher,
+            tickets_tx,
+        };
+        self.dispatches_tx
+            .send(dispatch)
+            .expect("send to unbounded internal dispatches");
+        tickets_rx
+    }
+
+    async fn do_manage_dispatchers(
+        mut dispatches_rx: mpsc::UnboundedReceiver<Dispatch>,
+        mut tickets_rx: mpsc::UnboundedReceiver<Ticket>,
+    ) {
+        let mut unsent: BTreeMap<Road, VecDeque<Ticket>> = BTreeMap::new();
+        let mut dispatchers: BTreeMap<Road, VecDeque<mpsc::Sender<Ticket>>> = BTreeMap::new();
+        'select: loop {
+            tokio::select! {
+                ticket = tickets_rx.recv() => {
+                    if ticket.is_none() {
+                        break;
+                    }
+                    let ticket = ticket.unwrap();
+                    let road_dispatchers = dispatchers.entry(ticket.road).or_default();
+                    loop {
+                        let dispatcher = road_dispatchers.front();
+                        if dispatcher.is_none() {
+                            break;
+                        }
+                        let dispatcher = dispatcher.unwrap();
+                        if dispatcher.send(ticket.clone()).await.is_err() {
+                            road_dispatchers.pop_front();
+                            continue;
+                        } else {
+                            break 'select;
+                        }
+                    }
+                    unsent.entry(ticket.road).or_default().push_back(ticket);
+                }
+                dispatch = dispatches_rx.recv() => {
+                    if dispatch.is_none() {
+                        break;
+                    }
+                    let Dispatch { dispatcher, tickets_tx } = dispatch.unwrap();
+                    for road in dispatcher.roads.iter() {
+                        if let Some(tickets) = unsent.get_mut(&road) {
+                            loop {
+                                let ticket = tickets.pop_front();
+                                if ticket.is_none() {
+                                    break;
+                                }
+                                let ticket = ticket.unwrap();
+                                if tickets_tx.send(ticket.clone()).await.is_err() {
+                                    tickets.push_front(ticket);
+                                    break 'select;
+                                }
+                            }
+                        }
+                    }
+                    for road in dispatcher.roads.iter() {
+                        let road_dispatchers = dispatchers.entry(*road).or_default();
+                        road_dispatchers.push_back(tickets_tx.clone());
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +269,7 @@ mod tests {
         };
         assert_eq!(
             Some(ticket),
-            Region::compute_ticket(camera, plate, now, then, there)
+            Region::compute_ticket(camera, &plate, now, then, there)
         );
     }
 }
