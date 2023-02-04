@@ -16,8 +16,6 @@ pub struct Server {
     region: Region,
 }
 
-// TODO missing 0QNP from tickets issued... and 553 other cars heh
-
 impl Server {
     pub fn new() -> Self {
         Self {
@@ -25,7 +23,7 @@ impl Server {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), io::Error> {
         let (tx, mut rx) = mpsc::channel::<ServerCommand>(16);
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
@@ -33,7 +31,11 @@ impl Server {
             tokio::select! {
                 Ok((socket, _)) = listener.accept() => {
                     let tx = tx.clone();
-                    tokio::spawn(async move { handle(socket, tx).await; });
+                    tokio::spawn(async move {
+                        if let Err(err) = handle(socket, tx).await {
+                            tracing::error!(?err, "handling socket");
+                        }
+                    });
                 }
                 Some(cmd) = rx.recv() => {
                     match cmd {
@@ -41,11 +43,13 @@ impl Server {
                             self.region.record_plate(camera, plate, timestamp);
                         }
                         ServerCommand::RegisterDispatcher(dispatcher, tx) => {
-                            tx.send(self.region.register_dispatcher(dispatcher));
+                            if let Err(err) = tx.send(self.region.register_dispatcher(dispatcher.clone())) {
+                                tracing::error!(?err, ?dispatcher, "registering dispatcher");
+                            }
                         }
                     }
                 }
-            };
+            }
         }
     }
 }
@@ -74,7 +78,7 @@ async fn maybe_tick(interval: &mut Option<Option<Interval>>) -> Option<()> {
     }
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip_all)]
 async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Result<(), io::Error> {
     let mut heartbeat: Option<Option<Interval>> = None;
     let mut conn = Connection::new(&mut socket);
@@ -111,7 +115,7 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
     }
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(conn, tx, heartbeat))]
 async fn handle_camera(
     mut conn: Connection<'_>,
     tx: mpsc::Sender<ServerCommand>,
@@ -134,13 +138,12 @@ async fn handle_camera(
                     }
                     Ok(Message::Plate(plate, timestamp)) => {
                         let cmd = ServerCommand::RecordPlate(camera, plate, timestamp);
-                        if tx.send(cmd).await.is_err() {
-                            eprintln!("dropped plate record");
+                        if let Err(err) = tx.send(cmd).await {
+                            tracing::error!(?err, "dropped plate record");
                         }
                     }
                     Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
                     _ => {
-                        eprintln!("invalid camera message {:?}", msg);
                         return send_error(conn, "invalid camera message").await;
                     }
                 }
@@ -152,7 +155,7 @@ async fn handle_camera(
     }
 }
 
-#[tracing::instrument]
+#[tracing::instrument(skip(conn, cmd_tx, heartbeat))]
 async fn handle_dispatcher(
     mut conn: Connection<'_>,
     cmd_tx: mpsc::Sender<ServerCommand>,
@@ -179,6 +182,7 @@ async fn handle_dispatcher(
                     return Ok(());
                 }
                 let ticket = ticket.unwrap();
+                tracing::info!(?ticket, "writing ticket");
                 conn.write_message(&Message::Ticket(ticket)).await?
             }
             msg = conn.read_message() => {

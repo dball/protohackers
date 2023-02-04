@@ -88,12 +88,22 @@ impl Region {
         loop {
             let obs = observations_rx.recv().await;
             if obs.is_none() {
+                tracing::error!("observations channel closed");
                 break;
             }
-            if let Some(ticket) = Self::record_observation(&mut records, &obs.unwrap()) {
-                tracing::info!(?ticket, "sending violation");
-                if let Err(err) = violations_tx.send(ticket.clone()).await {
-                    tracing::error!(?ticket, ?err, "error sending violation");
+            let (ticket1, ticket2) = Self::record_observation(&mut records, &obs.unwrap());
+            if let Some(ticket1) = ticket1 {
+                tracing::info!(?ticket1, "sending violation");
+                if let Err(err) = violations_tx.send(ticket1.clone()).await {
+                    tracing::error!(?ticket1, ?err, "error sending violation");
+                    return;
+                }
+            }
+            if let Some(ticket2) = ticket2 {
+                tracing::info!(?ticket2, "sending violation");
+                if let Err(err) = violations_tx.send(ticket2.clone()).await {
+                    tracing::error!(?ticket2, ?err, "error sending violation");
+                    return;
                 }
             }
         }
@@ -103,27 +113,26 @@ impl Region {
     fn record_observation(
         records: &mut BTreeMap<Plate, BTreeMap<Road, BTreeMap<Timestamp, Mile>>>,
         obs: &Observation,
-    ) -> Option<Ticket> {
+    ) -> (Option<Ticket>, Option<Ticket>) {
         let by_road = records.entry(obs.plate.clone()).or_default();
         let by_timestamp = by_road.entry(obs.camera.road).or_default();
         if by_timestamp.insert(obs.time, obs.camera.mile).is_none() {
             tracing::info!("recorded observation");
-            if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
-                if let Some(ticket) =
-                    Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
-                {
-                    return Some(ticket);
-                }
-            }
-            if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
-                if let Some(ticket) =
-                    Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
-                {
-                    return Some(ticket);
-                }
-            }
+            let ticket1 = if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
+                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
+            } else {
+                None
+            };
+            let ticket2 = if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
+                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
+            } else {
+                None
+            };
+            (ticket1, ticket2)
+        } else {
+            tracing::error!("inconsistent observations");
+            (None, None)
         }
-        None
     }
 
     // returns a ticket if the observations indicate a speed violation.
@@ -140,7 +149,6 @@ impl Region {
         let hours = (f64::from(now) - f64::from(then)) / 3600.0;
         let velocity: f64 = miles / hours;
         let speed = velocity.abs();
-        tracing::info!(speed, miles, hours, "computing ticket");
         if speed > camera.limit.into() {
             tracing::info!("computed ticket");
             let (mile1, mile2, timestamp1, timestamp2) = if then < now {
@@ -170,6 +178,7 @@ impl Region {
         'outer: loop {
             let ticket = violations_rx.recv().await;
             if ticket.is_none() {
+                tracing::error!("violations channel closed");
                 break;
             }
             let ticket = ticket.unwrap();
@@ -190,6 +199,7 @@ impl Region {
                 tickets_issued_days.insert(day);
             }
         }
+        tracing::error!("stopping");
     }
 
     #[tracing::instrument(skip(self))]
@@ -227,12 +237,12 @@ impl Region {
                             break;
                         }
                         let dispatcher = dispatcher.unwrap();
-                        tracing::info!(?ticket, ?dispatcher, "trying to dispatch ticket");
+                        tracing::info!(?ticket, "trying to dispatch ticket");
                         if let Err(err) = dispatcher.send(ticket.clone()).await {
                             tracing::warn!(?ticket, ?err, "failed to dispatch ticket");
                             road_dispatchers.pop_front();
                         } else {
-                            tracing::info!(?ticket, ?dispatcher, "dispatched ticket");
+                            tracing::info!(?ticket, "dispatched ticket");
                             continue 'select;
                         }
                     }
@@ -275,7 +285,7 @@ impl Region {
 mod tests {
     use std::time::Duration;
 
-    use tokio::time::{self, sleep};
+    use tokio::time::sleep;
     use tracing_test::traced_test;
 
     use crate::domain::Region;
