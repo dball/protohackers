@@ -107,7 +107,7 @@ impl Region {
         let by_road = records.entry(obs.plate.clone()).or_default();
         let by_timestamp = by_road.entry(obs.camera.road).or_default();
         if by_timestamp.insert(obs.time, obs.camera.mile).is_none() {
-            tracing::info!(?obs, "recorded observation");
+            tracing::info!("recorded observation");
             if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
                 Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
             } else if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
@@ -134,7 +134,9 @@ impl Region {
         let hours = (f64::from(now) - f64::from(then)) / 3600.0;
         let velocity: f64 = miles / hours;
         let speed = velocity.abs();
+        tracing::info!(speed, miles, hours, "computing ticket");
         if speed > camera.limit.into() {
+            tracing::info!("computed ticket");
             let (mile1, mile2, timestamp1, timestamp2) = if then < now {
                 (there, camera.mile, then, now)
             } else {
