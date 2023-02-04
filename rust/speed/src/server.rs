@@ -11,6 +11,7 @@ use crate::{
     domain::{Camera, Dispatcher, Plate, Region, Ticket, Timestamp},
 };
 
+#[derive(Debug)]
 pub struct Server {
     region: Region,
 }
@@ -24,6 +25,7 @@ impl Server {
         }
     }
 
+    #[tracing::instrument]
     pub async fn run(&mut self) -> Result<(), io::Error> {
         let (tx, mut rx) = mpsc::channel::<ServerCommand>(16);
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
@@ -48,6 +50,7 @@ impl Server {
     }
 }
 
+#[derive(Debug)]
 enum ServerCommand {
     RecordPlate(Camera, Plate, Timestamp),
     RegisterDispatcher(Dispatcher, oneshot::Sender<mpsc::Receiver<Ticket>>),
@@ -71,6 +74,7 @@ async fn maybe_tick(interval: &mut Option<Option<Interval>>) -> Option<()> {
     }
 }
 
+#[tracing::instrument]
 async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Result<(), io::Error> {
     let mut heartbeat: Option<Option<Interval>> = None;
     let mut conn = Connection::new(&mut socket);
@@ -107,6 +111,7 @@ async fn handle(mut socket: TcpStream, tx: mpsc::Sender<ServerCommand>) -> Resul
     }
 }
 
+#[tracing::instrument]
 async fn handle_camera(
     mut conn: Connection<'_>,
     tx: mpsc::Sender<ServerCommand>,
@@ -147,6 +152,7 @@ async fn handle_camera(
     }
 }
 
+#[tracing::instrument]
 async fn handle_dispatcher(
     mut conn: Connection<'_>,
     cmd_tx: mpsc::Sender<ServerCommand>,
@@ -155,13 +161,13 @@ async fn handle_dispatcher(
 ) -> Result<(), io::Error> {
     let (tx, rx) = oneshot::channel();
     let cmd = ServerCommand::RegisterDispatcher(dispatcher, tx);
-    if cmd_tx.send(cmd).await.is_err() {
-        eprintln!("failed to register dispatcher");
+    if let Err(err) = cmd_tx.send(cmd).await {
+        tracing::error!(?err, "failed to register dispatcher");
         return Ok(());
     }
     let ticket_rx = rx.await;
-    if ticket_rx.is_err() {
-        eprintln!("failed to receive dispatcher ticket channel");
+    if let Err(err) = ticket_rx {
+        tracing::error!(?err, "failed to receive dispatcher ticket channel");
         return Ok(());
     }
     let mut ticket_rx = ticket_rx.unwrap();
@@ -169,7 +175,7 @@ async fn handle_dispatcher(
         tokio::select! {
             ticket = ticket_rx.recv() => {
                 if ticket.is_none() {
-                    eprintln!("ticket channel closed");
+                    tracing::error!("ticket channel closed");
                     return Ok(());
                 }
                 let ticket = ticket.unwrap();

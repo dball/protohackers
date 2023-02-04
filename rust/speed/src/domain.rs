@@ -44,6 +44,7 @@ struct Dispatch {
     tickets_tx: mpsc::Sender<Ticket>,
 }
 
+#[derive(Debug)]
 pub struct Region {
     observations_tx: mpsc::UnboundedSender<Observation>,
     dispatches_tx: mpsc::UnboundedSender<Dispatch>,
@@ -67,6 +68,7 @@ impl Region {
         }
     }
 
+    #[tracing::instrument]
     pub fn record_plate(&mut self, camera: Camera, plate: Plate, time: Timestamp) {
         self.observations_tx
             .send(Observation {
@@ -77,6 +79,7 @@ impl Region {
             .expect("send to unbounded observations");
     }
 
+    #[tracing::instrument]
     async fn do_record_observations(
         mut observations_rx: mpsc::UnboundedReceiver<Observation>,
         violations_tx: mpsc::Sender<Ticket>,
@@ -88,11 +91,13 @@ impl Region {
                 break;
             }
             if let Some(ticket) = Self::record_observation(&mut records, &obs.unwrap()) {
+                tracing::info!(?ticket, "sending violation");
                 violations_tx.send(ticket).await;
             }
         }
     }
 
+    #[tracing::instrument]
     fn record_observation(
         records: &mut BTreeMap<Plate, BTreeMap<Road, BTreeMap<Timestamp, Mile>>>,
         obs: &Observation,
@@ -100,6 +105,7 @@ impl Region {
         let by_road = records.entry(obs.plate.clone()).or_default();
         let by_timestamp = by_road.entry(obs.camera.road).or_default();
         if by_timestamp.insert(obs.time, obs.camera.mile).is_none() {
+            tracing::info!(?obs, "recorded observation");
             if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
                 Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
             } else if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
@@ -113,6 +119,7 @@ impl Region {
     }
 
     // returns a ticket if the observations indicate a speed violation.
+    #[tracing::instrument]
     fn compute_ticket(
         camera: Camera,
         plate: &Plate,
@@ -144,6 +151,7 @@ impl Region {
         None
     }
 
+    #[tracing::instrument]
     async fn do_assess_violations(
         mut violations_rx: mpsc::Receiver<Ticket>,
         tickets_tx: mpsc::UnboundedSender<Ticket>,
@@ -163,12 +171,18 @@ impl Region {
                     break 'outer;
                 }
             }
-            if tickets_tx.send(ticket).is_err() {
+            tracing::info!(?ticket, "issuing ticket");
+            if let Err(err) = tickets_tx.send(ticket) {
+                tracing::error!(?err, "error issuing ticket");
                 break;
+            }
+            for day in day1..=day2 {
+                tickets_issued_days.insert(day);
             }
         }
     }
 
+    #[tracing::instrument]
     pub fn register_dispatcher(&mut self, dispatcher: Dispatcher) -> mpsc::Receiver<Ticket> {
         let (tickets_tx, tickets_rx) = mpsc::channel(1);
         let dispatch = Dispatch {
@@ -181,6 +195,7 @@ impl Region {
         tickets_rx
     }
 
+    #[tracing::instrument]
     async fn do_manage_dispatchers(
         mut dispatches_rx: mpsc::UnboundedReceiver<Dispatch>,
         mut tickets_rx: mpsc::UnboundedReceiver<Ticket>,
@@ -191,9 +206,11 @@ impl Region {
             tokio::select! {
                 ticket = tickets_rx.recv() => {
                     if ticket.is_none() {
+                        tracing::info!("ticket receiver channel closed, stopping");
                         break;
                     }
                     let ticket = ticket.unwrap();
+                    tracing::info!(?ticket, "dispatching ticket");
                     let road_dispatchers = dispatchers.entry(ticket.road).or_default();
                     loop {
                         let dispatcher = road_dispatchers.front();
@@ -208,10 +225,12 @@ impl Region {
                             break 'select;
                         }
                     }
+                    tracing::info!(?ticket, "recording ticket to send later");
                     unsent.entry(ticket.road).or_default().push_back(ticket);
                 }
                 dispatch = dispatches_rx.recv() => {
                     if dispatch.is_none() {
+                        tracing::info!("dispatch receiver channel closed, stopping");
                         break;
                     }
                     let Dispatch { dispatcher, tickets_tx } = dispatch.unwrap();
@@ -237,6 +256,7 @@ impl Region {
                 }
             }
         }
+        tracing::info!("stop");
     }
 }
 

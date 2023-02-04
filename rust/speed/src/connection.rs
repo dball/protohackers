@@ -10,6 +10,7 @@ use tokio::{
     },
 };
 
+#[derive(Debug)]
 pub struct Connection<'a> {
     reader: BufReader<ReadHalf<'a>>,
     writer: BufWriter<WriteHalf<'a>>,
