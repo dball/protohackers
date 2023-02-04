@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
 use tokio::sync::mpsc;
 
 pub type Timestamp = u32;
@@ -70,6 +69,7 @@ impl Region {
 
     #[tracing::instrument(skip(self))]
     pub fn record_plate(&mut self, camera: Camera, plate: Plate, time: Timestamp) {
+        tracing::info!("recording plate");
         self.observations_tx
             .send(Observation {
                 camera,
@@ -109,15 +109,21 @@ impl Region {
         if by_timestamp.insert(obs.time, obs.camera.mile).is_none() {
             tracing::info!("recorded observation");
             if let Some((then, there)) = by_timestamp.range(0..obs.time).last() {
-                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
-            } else if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
-                Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
-            } else {
-                None
+                if let Some(ticket) =
+                    Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
+                {
+                    return Some(ticket);
+                }
             }
-        } else {
-            None
+            if let Some((then, there)) = by_timestamp.range(obs.time + 1..).next() {
+                if let Some(ticket) =
+                    Self::compute_ticket(obs.camera, &obs.plate, obs.time, *then, *there)
+                {
+                    return Some(ticket);
+                }
+            }
         }
+        None
     }
 
     // returns a ticket if the observations indicate a speed violation.
@@ -267,6 +273,11 @@ impl Region {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::time::{self, sleep};
+    use tracing_test::traced_test;
+
     use crate::domain::Region;
 
     use super::{Camera, Mile, Plate, Ticket, Timestamp};
@@ -296,5 +307,25 @@ mod tests {
             Some(ticket),
             Region::compute_ticket(camera, &plate, now, then, there)
         );
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn replicate_bug() {
+        let camera = |mile| Camera {
+            road: 64782,
+            mile,
+            limit: 80,
+        };
+        let plate = "AD58VWD".to_string();
+        let mut region = Region::new();
+        region.record_plate(camera(607), plate.clone(), 98270088);
+        region.record_plate(camera(485), plate.clone(), 98277449);
+        region.record_plate(camera(348), plate.clone(), 98285700);
+        region.record_plate(camera(883), plate.clone(), 98253436);
+        region.record_plate(camera(772), plate.clone(), 98260133);
+        region.record_plate(camera(3), plate.clone(), 98301294);
+        region.record_plate(camera(196), plate.clone(), 98294018);
+        sleep(Duration::from_millis(1000)).await;
     }
 }
