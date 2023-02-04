@@ -68,7 +68,7 @@ impl Region {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn record_plate(&mut self, camera: Camera, plate: Plate, time: Timestamp) {
         self.observations_tx
             .send(Observation {
@@ -79,7 +79,7 @@ impl Region {
             .expect("send to unbounded observations");
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn do_record_observations(
         mut observations_rx: mpsc::UnboundedReceiver<Observation>,
         violations_tx: mpsc::Sender<Ticket>,
@@ -92,12 +92,14 @@ impl Region {
             }
             if let Some(ticket) = Self::record_observation(&mut records, &obs.unwrap()) {
                 tracing::info!(?ticket, "sending violation");
-                violations_tx.send(ticket).await;
+                if let Err(err) = violations_tx.send(ticket.clone()).await {
+                    tracing::error!(?ticket, ?err, "error sending violation");
+                }
             }
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(records))]
     fn record_observation(
         records: &mut BTreeMap<Plate, BTreeMap<Road, BTreeMap<Timestamp, Mile>>>,
         obs: &Observation,
@@ -151,7 +153,7 @@ impl Region {
         None
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn do_assess_violations(
         mut violations_rx: mpsc::Receiver<Ticket>,
         tickets_tx: mpsc::UnboundedSender<Ticket>,
@@ -168,7 +170,7 @@ impl Region {
             let tickets_issued_days = tickets_issued.entry(ticket.plate.clone()).or_default();
             for day in day1..=day2 {
                 if tickets_issued_days.contains(&day) {
-                    break 'outer;
+                    continue 'outer;
                 }
             }
             tracing::info!(?ticket, "issuing ticket");
@@ -182,7 +184,7 @@ impl Region {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     pub fn register_dispatcher(&mut self, dispatcher: Dispatcher) -> mpsc::Receiver<Ticket> {
         let (tickets_tx, tickets_rx) = mpsc::channel(1);
         let dispatch = Dispatch {
@@ -195,7 +197,7 @@ impl Region {
         tickets_rx
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     async fn do_manage_dispatchers(
         mut dispatches_rx: mpsc::UnboundedReceiver<Dispatch>,
         mut tickets_rx: mpsc::UnboundedReceiver<Ticket>,
@@ -210,7 +212,6 @@ impl Region {
                         break;
                     }
                     let ticket = ticket.unwrap();
-                    tracing::info!(?ticket, "dispatching ticket");
                     let road_dispatchers = dispatchers.entry(ticket.road).or_default();
                     loop {
                         let dispatcher = road_dispatchers.front();
@@ -218,11 +219,13 @@ impl Region {
                             break;
                         }
                         let dispatcher = dispatcher.unwrap();
-                        if dispatcher.send(ticket.clone()).await.is_err() {
+                        tracing::info!(?ticket, ?dispatcher, "trying to dispatch ticket");
+                        if let Err(err) = dispatcher.send(ticket.clone()).await {
+                            tracing::warn!(?ticket, ?err, "failed to dispatch ticket");
                             road_dispatchers.pop_front();
-                            continue;
                         } else {
-                            break 'select;
+                            tracing::info!(?ticket, ?dispatcher, "dispatched ticket");
+                            continue 'select;
                         }
                     }
                     tracing::info!(?ticket, "recording ticket to send later");
