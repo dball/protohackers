@@ -163,49 +163,83 @@ async fn handle_dispatcher(
     dispatcher: Dispatcher,
     mut heartbeat: Option<Option<Interval>>,
 ) -> Result<(), io::Error> {
-    let (tx, rx) = oneshot::channel();
-    let cmd = ServerCommand::RegisterDispatcher(dispatcher, tx);
-    if let Err(err) = cmd_tx.send(cmd).await {
-        tracing::error!(?err, "failed to register dispatcher");
-        return Ok(());
-    }
-    let ticket_rx = rx.await;
-    if let Err(err) = ticket_rx {
-        tracing::error!(?err, "failed to receive dispatcher ticket channel");
-        return Ok(());
-    }
-    let mut ticket_rx = ticket_rx.unwrap();
-    loop {
-        tokio::select! {
-            ticket = ticket_rx.recv() => {
-                if ticket.is_none() {
-                    tracing::error!("ticket channel closed");
-                    return Ok(());
-                }
-                let ticket = ticket.unwrap();
-                tracing::info!(?ticket, "writing ticket");
-                conn.write_message(&Message::Ticket(ticket)).await?
-            }
-            msg = conn.read_message() => {
-                match msg {
-                    Ok(Message::WantHeartbeat(duration)) => {
-                        if heartbeat.is_some() {
-                            return send_error(conn, "already beating").await;
+    // This copy of the loop is just to handle the case where roads is empty, and therefore
+    // the tickets_rx will always be closed/ing because there will be no tickets_tx stored
+    // in the road dispatchers collection.
+    if dispatcher.roads.is_empty() {
+        loop {
+            tokio::select! {
+                msg = conn.read_message() => {
+                    match msg {
+                        Ok(Message::WantHeartbeat(duration)) => {
+                            if heartbeat.is_some() {
+                                return send_error(conn, "already beating").await;
+                            }
+                            if let Some(duration) = duration {
+                                heartbeat = Some(Some(time::interval(duration)));
+                            } else {
+                                heartbeat = Some(None);
+                            }
                         }
-                        if let Some(duration) = duration {
-                            heartbeat = Some(Some(time::interval(duration)));
-                        } else {
-                            heartbeat = Some(None);
+                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
+                        _ => {
+                            return send_error(conn, "invalid dispatcher message").await;
                         }
                     }
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
-                    _ => {
-                        return send_error(conn, "invalid dispatcher message").await;
-                    }
+                }
+                Some(_) = maybe_tick(&mut heartbeat) => {
+                    conn.write_message(&Message::Heartbeat).await?;
                 }
             }
-            Some(_) = maybe_tick(&mut heartbeat) => {
-                conn.write_message(&Message::Heartbeat).await?;
+        }
+    } else {
+        let (tx, rx) = oneshot::channel();
+        let cmd = ServerCommand::RegisterDispatcher(dispatcher, tx);
+        if let Err(err) = cmd_tx.send(cmd).await {
+            tracing::error!(?err, "failed to register dispatcher");
+            return Ok(());
+        }
+        let ticket_rx = rx.await;
+        if let Err(err) = ticket_rx {
+            tracing::error!(?err, "failed to receive dispatcher ticket channel");
+            return Ok(());
+        }
+        let mut ticket_rx = ticket_rx.unwrap();
+        loop {
+            tokio::select! {
+                ticket = ticket_rx.recv() => {
+                    if ticket.is_none() {
+                        tracing::error!("ticket channel closed");
+                        return Ok(());
+                    }
+                    let ticket = ticket.unwrap();
+                    tracing::info!(?ticket, "writing ticket");
+                    if let Err(err) = conn.write_message(&Message::Ticket(ticket.clone())).await {
+                        tracing::error!(?ticket, ?err, "error writing ticket, closing dispatcher");
+                        return Err(err);
+                    }
+                }
+                msg = conn.read_message() => {
+                    match msg {
+                        Ok(Message::WantHeartbeat(duration)) => {
+                            if heartbeat.is_some() {
+                                return send_error(conn, "already beating").await;
+                            }
+                            if let Some(duration) = duration {
+                                heartbeat = Some(Some(time::interval(duration)));
+                            } else {
+                                heartbeat = Some(None);
+                            }
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {},
+                        _ => {
+                            return send_error(conn, "invalid dispatcher message").await;
+                        }
+                    }
+                }
+                Some(_) = maybe_tick(&mut heartbeat) => {
+                    conn.write_message(&Message::Heartbeat).await?;
+                }
             }
         }
     }

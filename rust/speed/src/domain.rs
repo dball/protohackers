@@ -255,21 +255,28 @@ impl Region {
                         break;
                     }
                     let Dispatch { dispatcher, tickets_tx } = dispatch.unwrap();
+                    tracing::info!(?dispatcher, "received dispatcher");
                     for road in dispatcher.roads.iter() {
+                        tracing::info!(?dispatcher, ?road, "registering dispatcher");
                         let road_dispatchers = dispatchers.entry(*road).or_default();
                         road_dispatchers.push_back(tickets_tx.clone());
                     }
                     for road in dispatcher.roads.iter() {
+                        tracing::info!(?dispatcher, ?road, "checking for unsent");
                         if let Some(tickets) = unsent.get_mut(&road) {
+                            tracing::info!(?dispatcher, ?road, "processing unsent tickets");
                             loop {
                                 let ticket = tickets.pop_front();
                                 if ticket.is_none() {
+                                    tracing::info!(?dispatcher, ?road, "no more unsent tickets");
                                     break;
                                 }
                                 let ticket = ticket.unwrap();
-                                if tickets_tx.send(ticket.clone()).await.is_err() {
+                                tracing::info!(?dispatcher, ?road, ?ticket, "trying to send ticket");
+                                if let Err(err) = tickets_tx.send(ticket.clone()).await {
+                                    tracing::error!(?dispatcher, ?road, ?ticket, ?err, "error sending ticket, requeueing");
                                     tickets.push_front(ticket);
-                                    break 'select;
+                                    continue 'select;
                                 }
                             }
                         }
