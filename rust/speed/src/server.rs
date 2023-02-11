@@ -25,6 +25,7 @@ impl Server {
 
     #[tracing::instrument(skip(self))]
     pub async fn run(&mut self) -> Result<(), io::Error> {
+        tracing::info!("starting server");
         let (tx, mut rx) = mpsc::channel::<ServerCommand>(16);
         let listener = TcpListener::bind("0.0.0.0:9000").await?;
         loop {

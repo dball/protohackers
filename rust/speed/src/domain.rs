@@ -149,7 +149,7 @@ impl Region {
         let hours = (f64::from(now) - f64::from(then)) / 3600.0;
         let velocity: f64 = miles / hours;
         let speed = velocity.abs();
-        if speed > camera.limit.into() {
+        if speed - 0.5 > camera.limit.into() {
             tracing::info!("computed ticket");
             let (mile1, mile2, timestamp1, timestamp2) = if then < now {
                 (there, camera.mile, then, now)
@@ -256,6 +256,10 @@ impl Region {
                     }
                     let Dispatch { dispatcher, tickets_tx } = dispatch.unwrap();
                     for road in dispatcher.roads.iter() {
+                        let road_dispatchers = dispatchers.entry(*road).or_default();
+                        road_dispatchers.push_back(tickets_tx.clone());
+                    }
+                    for road in dispatcher.roads.iter() {
                         if let Some(tickets) = unsent.get_mut(&road) {
                             loop {
                                 let ticket = tickets.pop_front();
@@ -269,10 +273,6 @@ impl Region {
                                 }
                             }
                         }
-                    }
-                    for road in dispatcher.roads.iter() {
-                        let road_dispatchers = dispatchers.entry(*road).or_default();
-                        road_dispatchers.push_back(tickets_tx.clone());
                     }
                 }
             }
@@ -336,6 +336,27 @@ mod tests {
         region.record_plate(camera(772), plate.clone(), 98260133);
         region.record_plate(camera(3), plate.clone(), 98301294);
         region.record_plate(camera(196), plate.clone(), 98294018);
+        sleep(Duration::from_millis(1000)).await;
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn replicate_bug2() {
+        let camera = |mile| Camera {
+            road: 50753,
+            mile,
+            limit: 100,
+        };
+        let plate = "GA96RKA".to_string();
+        let mut region = Region::new();
+        region.record_plate(camera(515), plate.clone(), 16117934);
+        region.record_plate(camera(353), plate.clone(), 16103360);
+        region.record_plate(camera(597), plate.clone(), 16125311);
+        region.record_plate(camera(353), plate.clone(), 16135870);
+        region.record_plate(camera(597), plate.clone(), 16127086);
+        region.record_plate(camera(123), plate.clone(), 16144150);
+        region.record_plate(camera(515), plate.clone(), 16130038);
+
         sleep(Duration::from_millis(1000)).await;
     }
 }

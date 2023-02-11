@@ -4,6 +4,13 @@ app = "aged-dust-7628"
 kill_signal = "SIGINT"
 kill_timeout = 5
 
+[experimental]
+# required because we can't infer your binary's name
+cmd = "./speed"
+
+[env]
+  RUST_BACKTRACE = "1"
+
 [[services]]
   internal_port = 9000
   protocol = "tcp"

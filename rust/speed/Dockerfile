@@ -1,29 +1,33 @@
-FROM rust:latest AS builder
+FROM rust:latest as builder
 
-RUN rustup target add x86_64-unknown-linux-musl
-RUN apt update && apt install -y musl-tools musl-dev
-RUN update-ca-certificates
+# Make a fake Rust app to keep a cached layer of compiled crates
+RUN USER=root cargo new app
+WORKDIR /usr/src/app
+COPY Cargo.toml Cargo.lock ./
+# Needs at least a main.rs file with a main function
+RUN mkdir src && echo "fn main(){}" > src/main.rs
+# Will build all dependent crates in release mode
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/app/target \
+    cargo build --release
 
-ENV USER=speed
-ENV UID=10001
+# Copy the rest
+COPY . .
+# Build (install) the actual binaries
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/app/target \
+    cargo install --path .
 
-RUN adduser --disabled-password --gecos "" --home="/app" --shell "/sbin/nologin" --no-create-home --uid "${UID}" "${USER}"
+# Runtime image
+FROM debian:bullseye-slim
 
-WORKDIR /speed
+# Run as "app" user
+RUN useradd -ms /bin/bash app
 
-COPY ./ .
+USER app
+WORKDIR /app
 
-RUN cargo build --target x86_64-unknown-linux-musl --release
+# Get compiled binaries from builder's cargo install directory
+COPY --from=builder /usr/local/cargo/bin/speed /app/speed
 
-FROM scratch
-
-COPY --from=builder /etc/passwd /etc/passwd
-COPY --from=builder /etc/group /etc/group
-
-WORKDIR /speed
-
-COPY --from=builder /speed/target/x86_64-unknown-linux-musl/release/speed ./
-
-USER speed:speed
-
-CMD ["/speed/speed"]
+# No CMD or ENTRYPOINT, see fly.toml with `cmd` override.
