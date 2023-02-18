@@ -1,0 +1,16 @@
+[package]
+name = "lrcp"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.69"
+lazy_static = "1.4.0"
+regex = "1.7.1"
+tokio = { version = "1.25.0", features = ["full", "tracing"] }
+tracing = "0.1.37"
+tracing-appender = "0.2.2"
+tracing-subscriber = "0.3.16"
+tracing-test = "0.2.4"
