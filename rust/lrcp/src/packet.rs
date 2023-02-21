@@ -60,12 +60,17 @@ pub fn parse_message(data: Vec<u8>) -> anyhow::Result<Message> {
         let mut ranges: Vec<Range<Position>> = Vec::with_capacity(1);
         {
             let mut offset = 0;
-            SLASHES.find_iter(body).for_each(|m| {
-                if m.start() > offset {
-                    ranges.push(start + offset..start + m.start());
-                    offset = m.start() + 1;
-                }
-            });
+            // TODO could we use regex split instead of doing this manually and still get ranges?
+            // TODO alternately, should we like box up the slices instead of using ranges?
+            SLASHES
+                .find_iter(body)
+                .map(|m| m.start())
+                .for_each(|m_start| {
+                    if !(m_start == 0 && offset == 0) {
+                        ranges.push(start + offset..start + m_start);
+                    }
+                    offset = m_start + 1;
+                });
             if let Some(range) = ranges.last() {
                 if range.end < stop {
                     ranges.push(range.end + 1..stop);
@@ -123,6 +128,18 @@ mod tests {
             position: 23,
             source: message.clone(),
             ranges: vec![15..18, 19..23, 24..28],
+        };
+        assert_eq!(Message::Data(data), parse_message(message).unwrap());
+    }
+
+    #[test]
+    fn test_parse_message_data_with_all_slashes() {
+        let message = b"/data/12345/23/\\/\\/\\//".to_vec();
+        let data = Data {
+            session: 12345,
+            position: 23,
+            source: message.clone(),
+            ranges: vec![16..17, 18..19, 20..21],
         };
         assert_eq!(Message::Data(data), parse_message(message).unwrap());
     }
