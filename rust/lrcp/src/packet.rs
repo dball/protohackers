@@ -1,5 +1,8 @@
 use regex::bytes::{Captures, Regex};
+use std::cmp::{max, min};
+use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::io::Read;
 use std::ops::Range;
 use std::str::FromStr;
 
@@ -17,7 +20,37 @@ pub struct Data {
     session: Session,
     position: Position,
     source: Vec<u8>,
-    ranges: Vec<Range<Position>>,
+    ranges: VecDeque<Range<Position>>,
+    range_cursor: Position,
+}
+
+// TODO if we didn't want to hold onto source for the entire read, we could either
+// nibble off its front ranges as we go. Alternately, if we want to leave source
+// alone, maybe we should box up an array instead, if that's a thing you can do.
+impl Read for Data {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.len() == 0 {
+            return Ok(0);
+        }
+        let mut buf_offset = 0;
+        loop {
+            let range = self.ranges.front();
+            if range.is_none() {
+                break;
+            }
+            let range = range.unwrap();
+            let possible = range.len();
+            let wanted = buf.len() - buf_offset;
+            let taking = min(possible, wanted);
+            let source = &self.source[range.start..range.start + taking];
+            buf[buf_offset..buf_offset + taking].copy_from_slice(source);
+            buf_offset += taking;
+            if taking == range.len() {
+                self.ranges.pop_front();
+            }
+        }
+        Ok(buf_offset)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,7 +90,7 @@ pub fn parse_message(data: Vec<u8>) -> anyhow::Result<Message> {
         let start = cap.start();
         let stop = cap.end();
         let body = &data.as_slice()[start..stop];
-        let mut ranges: Vec<Range<Position>> = Vec::with_capacity(1);
+        let mut ranges: VecDeque<Range<Position>> = VecDeque::with_capacity(1);
         {
             let mut offset = 0;
             // TODO could we use regex split instead of doing this manually and still get ranges?
@@ -67,16 +100,16 @@ pub fn parse_message(data: Vec<u8>) -> anyhow::Result<Message> {
                 .map(|m| m.start())
                 .for_each(|m_start| {
                     if !(m_start == 0 && offset == 0) {
-                        ranges.push(start + offset..start + m_start);
+                        ranges.push_back(start + offset..start + m_start);
                     }
                     offset = m_start + 1;
                 });
-            if let Some(range) = ranges.last() {
+            if let Some(range) = ranges.back() {
                 if range.end < stop {
-                    ranges.push(range.end + 1..stop);
+                    ranges.push_back(range.end + 1..stop);
                 }
             } else {
-                ranges.push(start..stop);
+                ranges.push_back(start..stop);
             }
         }
         let data = Data {
@@ -84,6 +117,7 @@ pub fn parse_message(data: Vec<u8>) -> anyhow::Result<Message> {
             position,
             source: data,
             ranges,
+            range_cursor: 0,
         };
         Ok(Message::Data(data))
     } else if let Some(caps) = ACK.captures(&data) {
@@ -115,7 +149,8 @@ mod tests {
             session: 12345,
             position: 23,
             source: message.clone(),
-            ranges: vec![15..21],
+            ranges: VecDeque::from([15..21]),
+            range_cursor: 0,
         };
         assert_eq!(Message::Data(data), parse_message(message).unwrap());
     }
@@ -127,7 +162,8 @@ mod tests {
             session: 12345,
             position: 23,
             source: message.clone(),
-            ranges: vec![15..18, 19..23, 24..28],
+            ranges: VecDeque::from([15..18, 19..23, 24..28]),
+            range_cursor: 0,
         };
         assert_eq!(Message::Data(data), parse_message(message).unwrap());
     }
@@ -139,8 +175,25 @@ mod tests {
             session: 12345,
             position: 23,
             source: message.clone(),
-            ranges: vec![16..17, 18..19, 20..21],
+            ranges: VecDeque::from([16..17, 18..19, 20..21]),
+            range_cursor: 0,
         };
         assert_eq!(Message::Data(data), parse_message(message).unwrap());
+    }
+
+    #[test]
+    fn test_read_message_data() {
+        let message = b"/data/12345/23/foo\\/bar\\\\baz/".to_vec();
+        let mut data = Data {
+            session: 12345,
+            position: 23,
+            source: message.clone(),
+            ranges: VecDeque::from([15..18, 19..23, 24..28]),
+            range_cursor: 0,
+        };
+        let mut buf: Vec<u8> = vec![];
+        let n = data.read_to_end(&mut buf).unwrap();
+        assert_eq!(n, 11);
+        assert_eq!(b"foo/bar\\baz".to_vec(), buf);
     }
 }
